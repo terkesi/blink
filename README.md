@@ -54,7 +54,7 @@ JSON schema version 1 includes `results`, `operation`, `coverage`, `budgets`, `e
 
 `coverage.complete` requires full enumeration, complete planning, and a valid judgment for every eligible window. A bounded search can return useful results with incomplete coverage. Check coverage separately from `operation`. Refusals count as unjudged. Output limits keep whole records and report omissions.
 
-The relevance threshold remains provisional at 0.5. Live synthetic calibration at `2560970` returned every required source span for 30 of 30 positive small-scope questions and 8 of 16 larger-scope questions. False positives were 0 of 10 and 0 of 16 negative questions, respectively. The larger set includes paired neutral and hostile variants, so those questions are not independent. These measurements do not establish accuracy on production repositories. See the [verification guide](docs/verification.md) to run the evaluation.
+The relevance threshold remains provisional at 0.5. At `2560970`, two independently authored synthetic holdouts returned every required source span for 6 of 12 and 16 of 18 positive questions. Queries for absent behavior returned source in 0 of 12 and 5 of 18 cases. Some of those excerpts were tests that contradicted the requested behavior. Returned source still needs interpretation, and these small suites do not establish accuracy on production repositories. See the [verification guide](docs/verification.md) to run the evaluation.
 
 ## Inventory policy
 

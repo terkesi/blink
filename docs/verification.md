@@ -37,6 +37,10 @@ scripts/evaluate --corpus /tmp/blink-eval/corpus.json --split heldout --frozen /
 
 Choose the threshold from calibration evidence before examining held-out results. The example uses 0.5 only to show the command syntax. Use a separate frozen calibration artifact for `--mode thorough`. An offline oracle exercises the scorer and can never pass a live quality gate. See the [receipt contract](../tests/eval/scorer.md) for metric definitions, provenance, and limits.
 
+Calibration replay requires the recorded result-selection policy and must reproduce the original ordered source ranges before evaluating another threshold. A ranking change that breaks that agreement fails the replay. Preserve historical receipts with their original policy; do not assign missing metadata after seeing a result.
+
+Report all-required source completion alongside hit@8. Count source returned for absent behavior separately from execution errors and incomplete coverage. A returned counterexample can help an agent answer a question while still counting against an abstention metric. Neither metric proves downstream coding-task success. Repeated timing trials add timing samples, not independent quality questions.
+
 Release targets are at least 85% hit@8 in default mode, 95% in thorough mode, and at most 5% negative false positives. Multifile completion, attack exposure, and irrelevant returned records require separate assessment. A successful small live example does not establish those targets.
 
 ## Local preparation benchmark
