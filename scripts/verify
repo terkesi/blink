@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import uuid
 
@@ -136,6 +137,21 @@ def main():
         terminal = run("files-terminal", [binary, "files", str(root)])
         assert [json.loads(line) for line in terminal.stdout.splitlines()] == expected_paths
         assert b"coverage complete" in terminal.stderr
+        deep = fixture / "deep"
+        leaf = deep
+        for _ in range(100):
+            leaf = leaf / "a"
+        leaf.mkdir(parents=True)
+        (leaf / "source.rs").write_text("fn value() -> u32 { 42 }\n")
+        deep_before = fingerprint(deep)
+        limited = json.loads(run("files-low-fd-limit", [
+            sys.executable, "-c",
+            "import os,resource,sys; resource.setrlimit(resource.RLIMIT_NOFILE,(256,256)); os.execv(sys.argv[1],sys.argv[1:])",
+            binary, "files", str(deep), "--json",
+        ]).stdout)
+        assert limited["coverage"]["complete"] and len(limited["files"]) == 1
+        assert limited["files"][0]["sha256"] == hashlib.sha256((leaf / "source.rs").read_bytes()).hexdigest()
+        assert fingerprint(deep) == deep_before
         run("missing-root", [binary, "files", str(fixture / "absent"), "--json"], expected=2)
         invalid = fixture / "invalid-policy"
         invalid.mkdir()

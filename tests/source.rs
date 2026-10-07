@@ -280,6 +280,47 @@ mod unix {
     }
 
     #[test]
+    fn snapshot_keeps_open_directory_contents_when_its_path_is_replaced() {
+        let root = TempDir::new().unwrap();
+        let moved = TempDir::new().unwrap();
+        put(root.path(), "sub/a.rs", "original a");
+        put(root.path(), "sub/b.rs", "original b");
+        let source = Source::open(root.path()).unwrap();
+        let replace_at = (1..100)
+            .find(|stop_at| {
+                let mut checkpoints = 0;
+                let snapshot = source.snapshot(Limits::default(), &mut || {
+                    checkpoints += 1;
+                    if checkpoints == *stop_at {
+                        Control::Cancel
+                    } else {
+                        Control::Continue
+                    }
+                });
+                snapshot.files().len() == 1
+            })
+            .expect("a checkpoint between capturing the two files");
+        let mut checkpoints = 0;
+        let mut snapshot = source.snapshot(Limits::default(), &mut || {
+            checkpoints += 1;
+            if checkpoints == replace_at {
+                fs::rename(root.path().join("sub"), moved.path().join("sub")).unwrap();
+                put(root.path(), "sub/a.rs", "replacement a");
+                put(root.path(), "sub/b.rs", "replacement b");
+            }
+            Control::Continue
+        });
+
+        assert!(checkpoints >= replace_at);
+        assert_eq!(paths(&snapshot), ["sub/a.rs", "sub/b.rs"]);
+        assert_eq!(snapshot.files()[0].text(), "original a");
+        assert_eq!(snapshot.files()[1].text(), "original b");
+        assert!(snapshot.coverage().complete);
+        assert!(!snapshot.recheck(0, &mut || Control::Continue).unwrap());
+        assert!(!snapshot.recheck(1, &mut || Control::Continue).unwrap());
+    }
+
+    #[test]
     fn root_descriptor_survives_path_replacement() {
         let container = TempDir::new().unwrap();
         let root = container.path().join("selected");

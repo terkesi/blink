@@ -163,9 +163,9 @@ impl Snapshot {
         let path = Path::new(file.path());
         let result = (|| {
             let parent = open_relative_dir(&self.root, path.parent().unwrap_or(Path::new("")))?;
+            let name = Path::new(path.file_name().ok_or_else(invalid_path)?);
             read_bounded(
-                &parent,
-                Path::new(path.file_name().ok_or_else(invalid_path)?),
+                |options| open_file(&parent, name, options),
                 self.limits,
                 &mut self.coverage,
                 control,
@@ -291,8 +291,7 @@ impl Scan<'_> {
             Ok(_) => {}
         }
         let bytes = match read_bounded(
-            dir,
-            Path::new(name),
+            |options| open_file(dir, Path::new(name), options),
             self.limits,
             &mut self.coverage,
             self.control,
@@ -490,19 +489,8 @@ impl Scan<'_> {
                 }
                 continue;
             }
-            let parent = match open_relative_dir(
-                &self.source.root,
-                path.parent().unwrap_or(Path::new("")),
-            ) {
-                Ok(parent) => parent,
-                Err(error) => {
-                    self.issue(&path, "file_parent_open", format!("{:?}", error.kind()));
-                    continue;
-                }
-            };
             let bytes = match read_bounded(
-                &parent,
-                Path::new(&name),
+                |options| entry.open_with(options),
                 self.limits,
                 &mut self.coverage,
                 self.control,
@@ -673,23 +661,20 @@ fn open_ancestry(path: &Path) -> io::Result<(Arc<Dir>, Vec<PinnedDirectory>)> {
     }
     Ok((dir, ancestors))
 }
-fn open_file(dir: &Dir, path: &Path) -> io::Result<cap_std::fs::File> {
+fn open_file(dir: &Dir, path: &Path, options: &OpenOptions) -> io::Result<cap_std::fs::File> {
     if path.components().count() != 1
         || !matches!(path.components().next(), Some(Component::Normal(_)))
     {
         return Err(invalid_path());
     }
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    dir.open_with(path, &options)
+    dir.open_with(path, options)
 }
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
 fn read_bounded(
-    dir: &Dir,
-    name: &Path,
+    open: impl FnOnce(&OpenOptions) -> io::Result<cap_std::fs::File>,
     limits: Limits,
     coverage: &mut Coverage,
     control: &mut dyn FnMut() -> Control,
@@ -697,7 +682,9 @@ fn read_bounded(
     if !checkpoint(coverage, control, true) {
         return Err(ReadFailure::Stopped);
     }
-    let mut file = open_file(dir, name)?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No).nonblock(true);
+    let mut file = open(&options)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(ReadFailure::Special);

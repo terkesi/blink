@@ -14,4 +14,6 @@ Run `scripts/verify --output /tmp/blink-proof`. Inspect `files-json.stdout`, `fi
 
 ## Gotchas
 
+`files-low-fd-limit.stdout` must include the one file 100 directories below its root with complete coverage. The child process has a 256-descriptor limit. This catches extra directory handles retained during traversal. The helper verifies that this source tree is unchanged.
+
 Terminal paths are JSON-quoted to escape control characters. Exclusion counts describe encountered files and pruned directories, not descendants of pruned directories. Hidden files remain excluded even when ignore rules negate a pattern. A selected subdirectory inherits repository ignore rules. Invalid or unreadable ignore rules make coverage incomplete and exclude the affected subtree. Files are individual snapshots, not an atomic repository snapshot.
