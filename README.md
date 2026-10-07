@@ -21,6 +21,16 @@ Set `OPENAI_API_KEY` in the environment before searching. Blink uses `https://ap
 
 Search sends the query, relative paths, and selected source excerpts to OpenAI. Choose the smallest useful root and inspect `blink files ROOT` first. Filename exclusions do not detect every secret embedded in otherwise eligible source.
 
+## Install the agent skill
+
+Install the [Blink usage skill](skills/blink/SKILL.md) so your coding agent can choose a search scope and interpret returned evidence:
+
+```sh
+npx skills add terkesi/blink --skill blink
+```
+
+Select your agent and installation scope when prompted. The skill and CLI install separately. The skill does not configure credentials. The repository's verification skill is for developing Blink.
+
 ## Search behavior
 
 Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Half of each candidate batch explores files in deterministic order. The other half uses query terms and paths to rank candidates. Each request asks up to eight independent relevance questions.
