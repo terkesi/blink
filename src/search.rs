@@ -683,6 +683,24 @@ async fn execute_with_policy(
             .then(a.start_byte.cmp(&b.start_byte))
     });
     let omitted_results = results.len().saturating_sub(options.limit);
+    if omitted_results > 0 {
+        let mut occurrences = BTreeMap::new();
+        let mut rounds: Vec<_> = results
+            .into_iter()
+            .map(|record| {
+                let parent = record
+                    .path
+                    .rsplit_once('/')
+                    .map_or("", |(parent, _)| parent);
+                let occurrence = occurrences.entry(parent.to_owned()).or_insert(0usize);
+                let round = *occurrence;
+                *occurrence += 1;
+                (round, record)
+            })
+            .collect();
+        rounds.sort_by_key(|(round, _)| *round);
+        results = rounds.into_iter().map(|(_, record)| record).collect();
+    }
     results.truncate(options.limit);
     let judged = probabilities
         .values()

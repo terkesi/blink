@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     sync::{Mutex, atomic::AtomicUsize},
@@ -605,6 +606,99 @@ async fn encoded_output_limit_preserves_records_and_never_calls_omitted_matches_
     assert!(value["results"].as_array().unwrap().is_empty());
     assert_eq!(report.exit_code(), 3);
     assert!(report.omitted_results > 0);
+}
+
+#[tokio::test]
+async fn result_limit_keeps_other_directories_before_repeated_high_scores() {
+    let root = fixture(0);
+    let mut all: Vec<_> = (0..10)
+        .map(|index| (format!("a/file{index:02}.rs"), 1.0))
+        .collect();
+    all.extend(
+        [
+            ("b/first.rs", 0.98),
+            ("b/second.rs", 0.97),
+            ("c/source.rs", 0.96),
+            ("root.rs", 0.95),
+        ]
+        .map(|(path, probability)| (path.to_owned(), probability)),
+    );
+    for (path, _) in &all {
+        let path = root.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "fn item() {}\n").unwrap();
+    }
+    let scores: BTreeMap<_, _> = all.iter().cloned().collect();
+    let server = Server::new(move |request, _| {
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let answers: Vec<_> = input["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| {
+                json!({"type": "predicate", "name": candidate["name"], "probability": scores[candidate["path"].as_str().unwrap()]})
+            })
+            .collect();
+        Reply {
+            status: 200,
+            body: json!({"answers": answers}),
+            delay: Duration::ZERO,
+            retry_after: None,
+        }
+    })
+    .await;
+    let diverse = [
+        "a/file00.rs",
+        "b/first.rs",
+        "c/source.rs",
+        "root.rs",
+        "a/file01.rs",
+        "b/second.rs",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let original: Vec<_> = all.iter().map(|(path, _)| path.clone()).collect();
+    for (limit, expected) in [(6, diverse), (14, original.clone()), (20, original)] {
+        for _ in 0..2 {
+            let mut report = run(
+                &root,
+                &server,
+                Options {
+                    limit,
+                    ..Options::default()
+                },
+            )
+            .await;
+            assert_eq!(report.exit_code(), 0);
+            assert!(report.coverage.complete);
+            assert_eq!(report.omitted_results, all.len() - expected.len());
+            assert_eq!(
+                report
+                    .results
+                    .iter()
+                    .map(|result| &result.path)
+                    .collect::<Vec<_>>(),
+                expected.iter().collect::<Vec<_>>()
+            );
+            for result in &report.results {
+                let source = fs::read_to_string(root.path().join(&result.path)).unwrap();
+                assert_eq!(result.excerpt, source);
+                assert_eq!((result.start_byte, result.end_byte), (0, source.len()));
+                assert_eq!((result.start_line, result.end_line), (1, 1));
+                assert_eq!(
+                    result.sha256,
+                    format!("{:x}", Sha256::digest(source.as_bytes()))
+                );
+                assert_eq!(
+                    result.probability,
+                    all.iter().find(|(path, _)| path == &result.path).unwrap().1
+                );
+            }
+            assert!(report.encode_json().unwrap().len() <= MAX_OUTPUT_BYTES);
+            assert!(!report.output_truncated);
+            assert_eq!(report.omitted_results, all.len() - expected.len());
+        }
+    }
 }
 
 #[test]
