@@ -14,7 +14,7 @@ scripts/check-eval-corpus
 scripts/verify --output /tmp/blink-verification
 ```
 
-The HTTP tests run a loopback server through the production provider and search coordinator. They exercise payloads, responses, encoded byte reservations, retries, deadlines, cancellation, and source changes. They make no model calls.
+The HTTP tests run a loopback server through the production provider and search coordinator. They exercise payloads, responses, shared preview/source byte reservations, retries, deadlines, cancellation, and source changes. Routing tests verify that delayed preview scores change later source admission, failed previews preserve fallback, and preview scores cannot produce source results. They make no model calls.
 
 ## Retrieval evaluation
 

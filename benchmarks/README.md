@@ -1,6 +1,6 @@
 # Benchmarks
 
-[2026-10-07 results](2026-10-07.md) record the current retrieval limits, rejected experiments, and their evidence.
+[2026-10-07 results](2026-10-07.md) record the current retrieval limits and experiment history. Region previews improved calibration completeness from 4/12 to 7/12 in two runs, with no additional negative-source cases or errors. Fresh validation remains outstanding.
 
 ## Read the metrics
 

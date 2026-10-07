@@ -27,7 +27,7 @@ Choose an absent or empty evidence directory. The helper builds the real binary 
 
 The requested output directory contains every command's stdout, stderr, and exit status. `commands.json` records the arguments. `source-before.json` and `source-after.json` record source hashes, modification times, permissions, and symlink targets. `summary.json` records the result and cleanup.
 
-The helper exercises the public binary without replacing internal state or mocking filesystem calls. File hashes and both fingerprints establish the source and absence of writes. Search integration tests drive the production coordinator and HTTP client against a loopback server. They check encoded request counts and bytes, concurrency, retries, deadlines, cancellation, source changes, refusals, and malformed responses. This proves offline behavior. It does not prove authentication, live model compatibility, or relevance quality.
+The helper exercises the public binary without replacing internal state or mocking filesystem calls. File hashes and both fingerprints establish the source and absence of writes. Search integration tests drive the production coordinator and HTTP client against a loopback server. They check delayed region routing, source-only results, shared request counts and bytes, concurrency, retries, deadlines, cancellation, source changes, refusals, and malformed responses. This proves offline behavior. It does not prove authentication, live model compatibility, or relevance quality.
 
 ## Cleanup
 
