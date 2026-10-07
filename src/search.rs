@@ -170,6 +170,9 @@ pub fn prepare(
                 end
             };
         }
+        if first == windows.len() {
+            continue;
+        }
         let parent = file
             .path()
             .rsplit_once('/')

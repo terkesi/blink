@@ -257,6 +257,9 @@ fn exploration_reaches_distinct_directories_within_the_candidate_cap() {
     for path in ["root.rs", "b/nested/source.rs", "c/source.rs"] {
         fs::write(root.path().join(path), "fn item() {}\n").unwrap();
     }
+    for index in 0..40 {
+        fs::write(root.path().join(format!("b/nested/empty{index:03}.rs")), "").unwrap();
+    }
     let source = Source::open(root.path()).unwrap();
     for (options, cap) in [(Options::default(), 64), (Options::thorough(), 256)] {
         let a = prepare(&source, "relevant query", &options, &mut || {
