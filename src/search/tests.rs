@@ -804,7 +804,7 @@ async fn thorough_policy_judges_more_than_the_default_candidate_quota() {
     let report = run(&fixture(80), &server, Options::thorough()).await;
     assert_eq!(report.exit_code(), 1);
     assert_eq!(report.coverage.windows_judged, 80);
-    assert_eq!(report.budgets.attempts, 11);
+    assert_eq!(report.budgets.attempts, 10);
     assert_eq!(report.budgets.max_attempts, 32);
     assert_eq!(report.budgets.max_encoded_request_bytes, 1024 * 1024);
     assert!(report.coverage.complete);
@@ -1084,7 +1084,7 @@ fn route_cards_bound_escaping_long_paths_queries_and_planning_cancellation() {
         &Options::default(),
         &mut || Control::Continue,
     );
-    let mut frontier = navigation::Frontier::new(&prepared);
+    let mut frontier = navigation::Frontier::new(&prepared, true);
     let routes = frontier
         .routes(&prepared, &query, &mut || Control::Continue)
         .unwrap();
@@ -1101,7 +1101,7 @@ fn route_cards_bound_escaping_long_paths_queries_and_planning_cancellation() {
         ids.into_iter().collect::<BTreeSet<_>>(),
         (0..prepared.window_count()).collect()
     );
-    let mut frontier = navigation::Frontier::new(&prepared);
+    let mut frontier = navigation::Frontier::new(&prepared, true);
     let mut checks = 0;
     assert!(
         frontier
@@ -1137,7 +1137,7 @@ async fn no_fit_route_and_source_jobs_allow_a_later_smaller_source_job() {
     let allowance = source_batch(&prepared, "query", &prepared.selected[8..16])
         .unwrap()
         .encoded_len();
-    let mut frontier = navigation::Frontier::new(&prepared);
+    let mut frontier = navigation::Frontier::new(&prepared, true);
     let routes = frontier
         .routes(&prepared, "query", &mut || Control::Continue)
         .unwrap();
@@ -1216,4 +1216,143 @@ async fn highest_priority_region_finishes_its_later_window_before_lower_regions(
         .unwrap();
     assert!(text[tail.start_byte..tail.end_byte].contains("unique_tail_action();"));
     assert!(!text[..prepared.windows[160].end].contains("unique_tail_action();"));
+}
+
+fn body_map(bodies: Vec<Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    bodies
+        .into_iter()
+        .map(|body| {
+            let value: Value = serde_json::from_slice(&body).unwrap();
+            (
+                value["questions"][0]["name"].as_str().unwrap().to_owned(),
+                body,
+            )
+        })
+        .collect()
+}
+
+fn assert_matching_bodies(actual: Vec<Vec<u8>>, expected: Vec<Vec<u8>>) {
+    let actual = body_map(actual);
+    assert_eq!(actual, body_map(expected));
+    let receipts: Vec<_> = actual.iter().map(|(name, body)| json!({
+        "first_candidate": name, "bytes": body.len(), "sha256": format!("{:x}", Sha256::digest(body))
+    })).collect();
+    eprintln!(
+        "captured_request_equivalence {}",
+        json!({"equal": true, "requests": receipts})
+    );
+}
+
+#[tokio::test]
+async fn thorough_bodies_and_ledger_match_original_static_batches() {
+    for files in [16, 80, 320] {
+        let root = fixture(files);
+        let source = Source::open(root.path()).unwrap();
+        let options = Options::thorough();
+        let prepared = prepare(&source, "item behavior", &options, &mut || {
+            Control::Continue
+        });
+        let baseline = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+        let mut expected = Reservation::default();
+        for indices in prepared.selected.chunks(BATCH_SIZE) {
+            let batch = source_batch(&prepared, "item behavior", indices).unwrap();
+            expected = reserve(expected, batch.encoded_len(), 32, 1024 * 1024).unwrap();
+            baseline.provider().attempt(&batch).await.unwrap();
+        }
+        let current = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+        let report = run(&root, &current, options).await;
+        assert!(
+            current
+                .bodies()
+                .iter()
+                .all(|body| !is_route(&serde_json::from_slice(body).unwrap()))
+        );
+        assert_matching_bodies(current.bodies(), baseline.bodies());
+        assert_eq!(report.budgets.attempts, expected.attempts);
+        assert_eq!(report.budgets.encoded_request_bytes, expected.bytes);
+        assert_eq!(report.coverage.windows_selected, prepared.selected.len());
+        assert_eq!(report.coverage.windows_judged, prepared.selected.len());
+    }
+}
+
+#[tokio::test]
+async fn thorough_no_fit_never_admits_windows_outside_original_selection() {
+    let root = fixture(300);
+    for index in 0..256 {
+        fs::write(
+            root.path().join(format!("file{index:03}.rs")),
+            "\\\"".repeat(1500),
+        )
+        .unwrap();
+    }
+    let source = Source::open(root.path()).unwrap();
+    let options = Options::thorough();
+    let prepared = prepare(&source, "neutral", &options, &mut || Control::Continue);
+    assert_eq!(prepared.selected, (0..256).collect::<Vec<_>>());
+    let policy = Policy {
+        max_attempts: 32,
+        max_bytes: 6000,
+        attempt_timeout: Duration::from_secs(1),
+    };
+    for indices in prepared.selected.chunks(BATCH_SIZE) {
+        let batch = source_batch(&prepared, "neutral", indices).unwrap();
+        assert!(
+            reserve(
+                Reservation::default(),
+                batch.encoded_len(),
+                policy.max_attempts,
+                policy.max_bytes
+            )
+            .is_none()
+        );
+    }
+    let later = source_batch(&prepared, "neutral", &(256..264).collect::<Vec<_>>()).unwrap();
+    assert!(later.encoded_len() <= policy.max_bytes);
+    let server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+    let report = execute_with_policy(
+        source,
+        "neutral".into(),
+        options,
+        server.provider(),
+        Arc::new(AtomicBool::new(false)),
+        policy,
+    )
+    .await;
+    assert!(server.bodies().is_empty());
+    assert_eq!(report.budgets.attempts, 0);
+    assert_eq!(report.budgets.encoded_request_bytes, 0);
+    assert_eq!(report.coverage.windows_selected, 256);
+    assert_eq!(report.coverage.windows_unjudged, 300);
+    assert!(report.budgets.stops.contains(&"request_byte_limit"));
+}
+
+#[tokio::test]
+async fn default_keeps_the_same_route_and_source_bodies() {
+    let root = fixture(160);
+    let source = Source::open(root.path()).unwrap();
+    let prepared = prepare(&source, "item behavior", &Options::default(), &mut || {
+        Control::Continue
+    });
+    let mut frontier = navigation::Frontier::new(&prepared, true);
+    let routes = frontier
+        .routes(&prepared, "item behavior", &mut || Control::Continue)
+        .unwrap();
+    assert_eq!(routes.len(), 2);
+    let baseline = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+    let mut expected = Reservation::default();
+    for (batch, _) in routes {
+        expected = reserve(expected, batch.encoded_len(), 8, 256 * 1024).unwrap();
+        baseline.provider().attempt(&batch).await.unwrap();
+    }
+    for indices in prepared.selected[..48].chunks(BATCH_SIZE) {
+        let batch = source_batch(&prepared, "item behavior", indices).unwrap();
+        expected = reserve(expected, batch.encoded_len(), 8, 256 * 1024).unwrap();
+        baseline.provider().attempt(&batch).await.unwrap();
+    }
+    let current = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+    let report = run(&root, &current, Options::default()).await;
+    assert_matching_bodies(current.bodies(), baseline.bodies());
+    assert_eq!(report.budgets.attempts, expected.attempts);
+    assert_eq!(report.budgets.encoded_request_bytes, expected.bytes);
+    assert_eq!(report.coverage.windows_judged, 48);
 }

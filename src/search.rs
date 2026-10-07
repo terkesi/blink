@@ -520,7 +520,7 @@ async fn execute_with_policy(
     let mut prepared = prepare(&source, &query, &options, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
-    let mut frontier = navigation::Frontier::new(&prepared);
+    let mut frontier = navigation::Frontier::new(&prepared, !options.thorough);
     match frontier.routes(&prepared, &query, &mut { &control }) {
         Ok(routes) => queue.extend(routes.into_iter().map(|(batch, ids)| Job {
             batch,
@@ -536,7 +536,11 @@ async fn execute_with_policy(
     let mut routes_pending = queue.len();
     let mut source_jobs = 0;
     let mut source_exhausted = false;
-    let mut selected = BTreeSet::new();
+    let mut selected = if options.thorough {
+        prepared.selected.iter().copied().collect()
+    } else {
+        BTreeSet::new()
+    };
     let mut tasks = JoinSet::new();
     let mut used = Reservation::default();
     let mut retries = 0;

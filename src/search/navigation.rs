@@ -20,6 +20,7 @@ struct Region {
 }
 
 pub(super) struct Frontier {
+    routing: bool,
     regions: Vec<Region>,
     baseline: VecDeque<usize>,
     routed: VecDeque<usize>,
@@ -28,15 +29,19 @@ pub(super) struct Frontier {
 }
 
 impl Frontier {
-    pub(super) fn new(prepared: &Prepared) -> Self {
+    pub(super) fn new(prepared: &Prepared, routing: bool) -> Self {
         let selected: BTreeSet<_> = prepared.selected.iter().copied().collect();
         Self {
+            routing,
             regions: Vec::new(),
             baseline: prepared
                 .selected
                 .iter()
                 .copied()
-                .chain((0..prepared.windows.len()).filter(|index| !selected.contains(index)))
+                .chain(
+                    (0..prepared.windows.len())
+                        .filter(|index| routing && !selected.contains(index)),
+                )
                 .collect(),
             routed: VecDeque::new(),
             admitted: vec![false; prepared.windows.len()],
@@ -50,6 +55,9 @@ impl Frontier {
         query: &str,
         control: &mut dyn FnMut() -> Control,
     ) -> Result<Vec<(Batch, Vec<usize>)>, Failure> {
+        if !self.routing {
+            return Ok(Vec::new());
+        }
         if prepared.windows.len() <= BATCH_SIZE {
             let ids: Vec<_> = (0..prepared.windows.len()).collect();
             if ids.is_empty()
