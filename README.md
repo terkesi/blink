@@ -33,9 +33,11 @@ Select your agent and installation scope when prompted. The skill and CLI instal
 
 ## Search behavior
 
-Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Half of each candidate batch explores files in deterministic order. The other half uses query terms and paths to rank candidates. Each request asks up to eight independent relevance questions.
+Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Half of candidate selection explores files in deterministic order. When the candidate budget cannot cover every window, exploration rotates among parent directories. The other half uses query terms and paths to rank candidates. Each request asks up to eight independent relevance questions.
 
 Accepted overlapping windows merge into source excerpts. On the first positive judgment for a file, Blink rereads it through the pinned root and compares its hash. That check lets already-validated results survive a later request timeout. Changed or unreadable files are omitted and the operation is incomplete. A later write can still occur after the check.
+
+When accepted records exceed `--limit`, Blink selects the best record from each parent directory before taking another from those directories. Higher probabilities come first within each round. When all records fit, Blink preserves probability order. A helper can be relevant to one step of the query without showing its caller or the entire workflow.
 
 | Limit | Default | `--thorough` |
 | --- | --- | --- |
@@ -52,7 +54,7 @@ JSON schema version 1 includes `results`, `operation`, `coverage`, `budgets`, `e
 
 `coverage.complete` requires full enumeration, complete planning, and a valid judgment for every eligible window. A bounded search can return useful results with incomplete coverage. Check coverage separately from `operation`. Refusals count as unjudged. Output limits keep whole records and report omissions.
 
-The relevance threshold is currently 0.5. It has not passed live calibration or held-out quality gates. Offline tests establish source, transport, and execution behavior; they do not establish retrieval accuracy.
+The relevance threshold remains provisional at 0.5. Live synthetic calibration at `2560970` returned every required source span for 30 of 30 positive small-scope questions and 8 of 16 larger-scope questions. False positives were 0 of 10 and 0 of 16 negative questions, respectively. The larger set includes paired neutral and hostile variants, so those questions are not independent. These measurements do not establish accuracy on production repositories. See the [verification guide](docs/verification.md) to run the evaluation.
 
 ## Inventory policy
 
