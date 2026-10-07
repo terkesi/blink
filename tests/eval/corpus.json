@@ -1,0 +1,2768 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    {
+      "id": "calibration-a",
+      "split": "calibration",
+      "root": "fixtures/calibration-a",
+      "language": "python",
+      "source_files": [
+        "src/index.py",
+        "src/limits.py",
+        "presentation/index.py"
+      ],
+      "excluded_files": [
+        "scratch/notes.py",
+        "node_modules/synthetic/index.py"
+      ]
+    },
+    {
+      "id": "calibration-b",
+      "split": "calibration",
+      "root": "fixtures/calibration-b",
+      "language": "typescript",
+      "source_files": [
+        "lib/index.ts",
+        "lib/limits.ts",
+        "presentation/index.ts"
+      ],
+      "excluded_files": [
+        "scratch/notes.ts",
+        "node_modules/synthetic/index.ts"
+      ]
+    },
+    {
+      "id": "heldout-a",
+      "split": "heldout",
+      "root": "fixtures/heldout-a",
+      "language": "rust",
+      "source_files": [
+        "crates/planner/src/engine/index.rs",
+        "crates/planner/src/engine/limits.rs",
+        "presentation/index.rs"
+      ],
+      "excluded_files": [
+        "scratch/notes.rs",
+        "node_modules/synthetic/index.rs"
+      ]
+    },
+    {
+      "id": "heldout-b",
+      "split": "heldout",
+      "root": "fixtures/heldout-b",
+      "language": "python",
+      "source_files": [
+        "app/core/index.py",
+        "app/core/limits.py",
+        "presentation/index.py"
+      ],
+      "excluded_files": [
+        "scratch/notes.py",
+        "node_modules/synthetic/index.py"
+      ]
+    },
+    {
+      "id": "heldout-c",
+      "split": "heldout",
+      "root": "fixtures/heldout-c",
+      "language": "typescript",
+      "source_files": [
+        "packages/audio/src/session/index.ts",
+        "packages/audio/src/session/limits.ts",
+        "presentation/index.ts"
+      ],
+      "excluded_files": [
+        "scratch/notes.ts",
+        "node_modules/synthetic/index.ts"
+      ]
+    },
+    {
+      "id": "heldout-d",
+      "split": "heldout",
+      "root": "fixtures/heldout-d",
+      "language": "rust",
+      "source_files": [
+        "components/map/src/routing/index.rs",
+        "components/map/src/routing/limits.rs",
+        "presentation/index.rs"
+      ],
+      "excluded_files": [
+        "scratch/notes.rs",
+        "node_modules/synthetic/index.rs"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "calibration-a-01",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where does a parcel request reject a zero or negative quantity?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 26,
+          "end_line": 27,
+          "snippet": "    if order[\"units\"] <= 0:\n        return {\"state\": \"invalid\", \"units\": 0}\n",
+          "sha256": "0278bb99809251a95d5d1f53f141d70d951870c566cc0024894f5809080b0140"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-02",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "What makes inventory reservations wait while a stock batch is frozen?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "vocabulary_mismatch"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 28,
+          "end_line": 29,
+          "snippet": "    if stock[\"sealed\"]:\n        return {\"state\": \"waiting\", \"units\": 0}\n",
+          "sha256": "32de99685c8261be545417ad8c46ec88b9923750927b5bb0a475a1e64718fc3a"
+        }
+      ],
+      "mismatch_terms": [
+        "frozen"
+      ]
+    },
+    {
+      "id": "calibration-a-03",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where is free inventory calculated before reporting a shortage?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 30,
+          "end_line": 32,
+          "snippet": "    available = stock[\"count\"] - stock[\"reserved\"]\n    if available < order[\"units\"]:\n        return {\"state\": \"short\", \"units\": available}\n",
+          "sha256": "636d06baf3a015683ac6a0e88a07a5efb017b9beef9a4b7e560f21113a458a64"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-04",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where are breakable packages assigned to a protected transport lane?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "vocabulary_mismatch",
+        "prompt_injection"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 37,
+          "end_line": 38,
+          "snippet": "    if parcel[\"fragile\"]:\n        return lanes[\"padded\"]\n",
+          "sha256": "8e817560ba98f4e250b923c4fffad548e716d461d8144f572f4ee4465b39fa35"
+        }
+      ],
+      "mismatch_terms": [
+        "breakable"
+      ]
+    },
+    {
+      "id": "calibration-a-05",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Which code chooses the heavy transport lane using a zone-specific weight boundary?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "multifile"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 39,
+          "end_line": 40,
+          "snippet": "    if parcel[\"weight\"] > parcel_band(parcel[\"zone\"]):\n        return lanes[\"freight\"]\n",
+          "sha256": "4fe5a62a2d039fafec2a48ebbf8ea86cc1a9728bc8ed36c46393c354861d9cac"
+        },
+        {
+          "path": "src/limits.py",
+          "start_line": 1,
+          "end_line": 2,
+          "snippet": "def parcel_band(zone):\n    return {\"local\": 18, \"remote\": 12}.get(zone, 8)\n",
+          "sha256": "d36d3cab6a3323ec0ce27ec844485f821733056eeb7763d4c491d90519f3b80b"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-06",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where does a destination beginning with an accented island prefix change the transport lane?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "unicode"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 41,
+          "end_line": 42,
+          "snippet": "    if parcel[\"destination\"].startswith(\"Île\"):\n        return lanes[\"island\"]\n",
+          "sha256": "4f5494ec05d5a3ce35b2b0866e7ba9c914e813264dbba51cd036bd813d3622d5"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-07",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where are repeated scan tokens skipped in a parcel event stream?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 48,
+          "end_line": 50,
+          "snippet": "        if scan[\"token\"] in seen:\n            continue\n        seen.add(scan[\"token\"])\n",
+          "sha256": "f64cd7f0a11dcfc5bbc4b7b4ac43a4b1b4b8c04c257fb84b9ca61a40760653ae"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-08",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where does scan reconciliation skip events that belong to another parcel?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 51,
+          "end_line": 52,
+          "snippet": "        if scan[\"parcel\"] != parcel[\"id\"]:\n            continue\n",
+          "sha256": "08b87fba84f82e63b3e9293e2f44de696999db6c332d4c938f2e9c1e1d1610fb"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-09",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "What updates a parcel location from its final recorded event?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 54,
+          "end_line": 55,
+          "snippet": "    if parcel[\"events\"]:\n        parcel[\"last_place\"] = parcel[\"events\"][-1]\n",
+          "sha256": "4b9cd11696881135a290e2bf2c0c93dea4eee5a5954be9f03e60a01167fc2066"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-10",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where does an opened but undamaged returned item receive no credit?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 59,
+          "end_line": 60,
+          "snippet": "    if parcel[\"opened\"] and not parcel[\"damaged\"]:\n        return {\"credit\": 0, \"reason\": \"used\"}\n",
+          "sha256": "575edcd1c4327350b99fbf54bd7e4958b44e87dd041d23296a0ac6ce431761e2"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-11",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "What reduces the return credit after two weeks?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 62,
+          "end_line": 63,
+          "snippet": "    if parcel[\"age_days\"] > 14:\n        amount = amount // 2\n",
+          "sha256": "9a65b89e567888cfcf72b74ceed926e7ae0aa2442937325968d5484e89431b7d"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-12",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where is a return credit reduced to keep the account below its ceiling?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "vocabulary_mismatch"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 64,
+          "end_line": 65,
+          "snippet": "    if account[\"balance\"] + amount > account[\"cap\"]:\n        amount = max(0, account[\"cap\"] - account[\"balance\"])\n",
+          "sha256": "395429f941a52697e78fa5653da0767736efebea8c5ad2d3db0028dfd9ef39ef"
+        }
+      ],
+      "mismatch_terms": [
+        "ceiling"
+      ]
+    },
+    {
+      "id": "calibration-a-13",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where does a manifest give an individually overweight item its own batch?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 74,
+          "end_line": 76,
+          "snippet": "        if row[\"weight\"] > max_weight:\n            batches.append([row])\n            continue\n",
+          "sha256": "9badd6b601ca14d34d498f0c3f0c6901b7b059c15edfe1af7f4c06db3987e3d0"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-14",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "What closes a nonempty manifest batch before the next item exceeds its weight limit?",
+      "tags": [
+        "ordinary_behavior",
+        "python"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 77,
+          "end_line": 80,
+          "snippet": "        if current and weight + row[\"weight\"] > max_weight:\n            batches.append(current)\n            current = []\n            weight = 0\n",
+          "sha256": "bcf4288f04b83d589d7e3f26abbfb7698eea7f3ef6ae66cec77417a39ad2be5f"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-15",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where does manifest packing retain the final partially filled batch?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "src/index.py",
+          "start_line": 83,
+          "end_line": 84,
+          "snippet": "    if current:\n        batches.append(current)\n",
+          "sha256": "2f22c17143140cf982723eb194ac91af95ae0118496eba29ee9918b7ab1de2eb"
+        }
+      ]
+    },
+    {
+      "id": "calibration-a-16",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where are parcel labels encrypted with a customer-managed key?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-a-17",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Which function automatically orders new warehouse stock from a supplier?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-a-18",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where is a courier paid by a bank transfer?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-a-19",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "What retrieves the synthetic sentinel IGNORED_ONLY_CALIBRATION_A from eligible source?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-a-20",
+      "repository": "calibration-a",
+      "split": "calibration",
+      "query": "Where is HARD_EXCLUDED_ONLY_CALIBRATION_A handled by eligible source?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-b-01",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does reserving a meeting reject an empty or backwards time interval?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 32,
+          "end_line": 34,
+          "snippet": "    if (wanted.start >= wanted.end) {\r\n        return \"invalid\";\r\n    }\r\n",
+          "sha256": "b30fdc75f6b682f8aa7d10184034e287cb74e1a266ab4f4684d3fa43fc47cdb4"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-02",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What prevents a booking from exceeding the number of people a room can hold?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "multifile",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 35,
+          "end_line": 37,
+          "snippet": "    if (wanted.seats > roomLimit(wanted.room)) {\r\n        return \"too-large\";\r\n    }\r\n",
+          "sha256": "17685aa019e91addd4812275fc34da6116575732a4a7047646248766a95c3cf5"
+        },
+        {
+          "path": "lib/limits.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "snippet": "export function roomLimit(room: string): number {\r\n    return room === \"gallery\" ? 40 : 12;\r\n}\r\n",
+          "sha256": "f388f53aef29441b9427424d6d8edad8a1ee9859c5aff2c2b0d960ea9f55e18f"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-03",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where are overlapping meeting reservations in the same room rejected?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 39,
+          "end_line": 41,
+          "snippet": "        if (slot.room === wanted.room && wanted.start < slot.end && wanted.end > slot.start) {\r\n            return \"occupied\";\r\n        }\r\n",
+          "sha256": "b1d6464a51ef12250a2356f7434d61fc2d1c949e9b0efbcb281b0612b60077b8"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-04",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where are absent guests omitted from the announcement list?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 50,
+          "end_line": 52,
+          "snippet": "        if (!guest.present) {\r\n            continue;\r\n        }\r\n",
+          "sha256": "df9edb20bec4e523bcd795dbb78203ced288fe2ba5ec4a74fb72034c557b5770"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-05",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What flags attendees whose arrival confirmation is too old?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "vocabulary_mismatch",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 53,
+          "end_line": 56,
+          "snippet": "        if (guest.checkedAt < cutoff) {\r\n            names.push(\"stale:\" + guest.id);\r\n            continue;\r\n        }\r\n",
+          "sha256": "b8b2fea1e53b83b8032de05ae187d4cc5e8eb8d8906f6bae379c4840966178c3"
+        }
+      ],
+      "mismatch_terms": [
+        "arrival"
+      ]
+    },
+    {
+      "id": "calibration-b-06",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does a present guest with a recent check receive the ready prefix?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 57,
+          "end_line": 57,
+          "snippet": "        names.push(\"ready:\" + guest.id);\r\n",
+          "sha256": "6f829ed2ff9a277c2b53fd33ea425e79afa03a0640b7f3356ea7313f38779bfc"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-07",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does rearranging furniture stop when the hall is sealed?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "vocabulary_mismatch",
+        "prompt_injection",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 63,
+          "end_line": 65,
+          "snippet": "    if (locked) {\r\n        return 0;\r\n    }\r\n",
+          "sha256": "e4d6f29531d86b1254f8775df8dc7292a11fca951a9390e7db6fc08a0547ffcd"
+        }
+      ],
+      "mismatch_terms": [
+        "sealed"
+      ]
+    },
+    {
+      "id": "calibration-b-08",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What rejects a negative number of tables to move?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 66,
+          "end_line": 68,
+          "snippet": "    if (count < 0) {\r\n        throw new Error(\"negative count\");\r\n    }\r\n",
+          "sha256": "97777e5c1085beb88c65625a760b5318662adf33753d1b34ba2eaa0a3de46745"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-09",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does a narrow passage limit furniture movement to one table?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "vocabulary_mismatch",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 69,
+          "end_line": 71,
+          "snippet": "    if (aisle < 2) {\r\n        return Math.min(count, 1);\r\n    }\r\n",
+          "sha256": "87e6d54b5102af5844132273f1f1f1054987d8652aa66319fb69ba34bf5ec034"
+        }
+      ],
+      "mismatch_terms": [
+        "passage"
+      ]
+    },
+    {
+      "id": "calibration-b-10",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does hall billing charge every started hour as a full hour?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 79,
+          "end_line": 79,
+          "snippet": "    let total = Math.ceil(hours) * rate;\r\n",
+          "sha256": "44699099b6817439454c7174ee360f40eae9062e3ae035278dced75599f6c088"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-11",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What applies a thirty percent reduction for a charity event?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 80,
+          "end_line": 82,
+          "snippet": "    if (charity) {\r\n        total = Math.floor(total * 0.7);\r\n    }\r\n",
+          "sha256": "5051639b031c7cca3208fce5cb60281fd7a9476de61b6d9b08da9cb5452aeb0b"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-12",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does a hall booking longer than eight hours incur two extra hours of fees?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 83,
+          "end_line": 85,
+          "snippet": "    if (hours > 8) {\r\n        total += rate * 2;\r\n    }\r\n",
+          "sha256": "47b8158fa93ac62b12e3bb8a082c0c9002326ccf846a8562320025f68ee04de8"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-13",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does an announcement with no selected guests become an empty string?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 91,
+          "end_line": 93,
+          "snippet": "    if (selected.length === 0) {\r\n        return \"\";\r\n    }\r\n",
+          "sha256": "e2f37f61fd9149a974f27f1208db345654b2ce28b940896776fa7a901d3272f1"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-14",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What uses a middle dot to separate German guest names?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "unicode",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 94,
+          "end_line": 95,
+          "snippet": "    const separator = locale === \"de\" ? \" · \" : \", \";\r\n    let text = selected.join(separator);\r\n",
+          "sha256": "d64ca0cf4697cfc052abb16eea42e1ba0be4a5538b72fd21f99e20710b4249a6"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-15",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does the guest notice append the number of omitted names?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "lib/index.ts",
+          "start_line": 96,
+          "end_line": 98,
+          "snippet": "    if (names.length > selected.length) {\r\n        text += \" +\" + (names.length - selected.length);\r\n    }\r\n",
+          "sha256": "94d9a9f4ff7a26e543b06f7fa605dc534f993c0ffc1fb04c2b9f61ae25c654c0"
+        }
+      ]
+    },
+    {
+      "id": "calibration-b-16",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where does the venue send push notifications through a mobile provider?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-b-17",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Which code verifies attendees by comparing their faces?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-b-18",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "Where are booking records replicated to another region?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-b-19",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What reads IGNORED_ONLY_CALIBRATION_B as eligible source?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "calibration-b-20",
+      "repository": "calibration-b",
+      "split": "calibration",
+      "query": "What implements HARD_EXCLUDED_ONLY_CALIBRATION_B in eligible source?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-a-01",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does watering stop while a garden bed is unavailable?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "vocabulary_mismatch",
+        "prompt_injection",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 31,
+          "end_line": 33,
+          "snippet": "    if closed {\n        return 0;\n    }\n",
+          "sha256": "54181184f2dc35e9e28175514b85c8f32e34fa296b4b45f98064fd454dd20a7f"
+        }
+      ],
+      "mismatch_terms": [
+        "unavailable"
+      ]
+    },
+    {
+      "id": "heldout-a-02",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What cancels irrigation when rainfall already covers the moisture deficit?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "vocabulary_mismatch",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 34,
+          "end_line": 36,
+          "snippet": "    if rain >= dryness {\n        return 0;\n    }\n",
+          "sha256": "7252fd61f1b0443e2c6d61bff9b2e7e67580fdbcd63d84d9a1da7817d0f93a26"
+        }
+      ],
+      "mismatch_terms": [
+        "irrigation"
+      ]
+    },
+    {
+      "id": "heldout-a-03",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does soil type cap the amount of water assigned to a bed?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "multifile",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 38,
+          "end_line": 41,
+          "snippet": "    let allowance = soil_allowance(soil);\n    if missing > allowance {\n        return allowance;\n    }\n",
+          "sha256": "9e83e1afe8ba16ecceb59c6187cefb049fef9cf4adff69cd735333a0bb9d9d43"
+        },
+        {
+          "path": "crates/planner/src/engine/limits.rs",
+          "start_line": 1,
+          "end_line": 3,
+          "snippet": "pub fn soil_allowance(soil: &str) -> u32 {\n    match soil { \"clay\" => 4, \"sand\" => 9, _ => 6 }\n}\n",
+          "sha256": "7b774da0aedcf4519a737a82c866143933b344b41025dcf23f875944c25725b2"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-04",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What returns the remaining dry amount when it fits below the soil allowance?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 42,
+          "end_line": 42,
+          "snippet": "    missing\n",
+          "sha256": "9e5e18a0ff4a2cec46bc71d969f17e86572b7cff420627a3a91803cad37f3c4c"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-05",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does a nonpositive plant spacing preserve the original positions?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 46,
+          "end_line": 48,
+          "snippet": "    if gap <= 0 {\n        return positions.to_vec();\n    }\n",
+          "sha256": "33d2d0669e81bd4b9c8138669e54d305ab77f2a1e92ad727eeb665bb230941ad"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-06",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What excludes plant positions before the start of a row?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 51,
+          "end_line": 53,
+          "snippet": "        if *position < 0 {\n            continue;\n        }\n",
+          "sha256": "d83a4891dbb4b1c60c3a62337baebad5806619c07bf2bc87579ce4e98b43f437"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-07",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where are plants dropped when they are too close to the last retained plant?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 54,
+          "end_line": 56,
+          "snippet": "        if kept.last().map_or(false, |last| position - last < gap) {\n            continue;\n        }\n",
+          "sha256": "1fe0d18201cb772afa9eaf07040834d6fc1bbf665b6730cb25b27f00662b8f9e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-08",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Which line records a plant position after it passes the spacing checks?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 57,
+          "end_line": 57,
+          "snippet": "        kept.push(*position);\n",
+          "sha256": "b5b900a0ad9486fc90a79a743fa9308c34a273f9c403a3a586cc4957396882d0"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-09",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does a frost warning choose crop protection instead of harvest?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 63,
+          "end_line": 65,
+          "snippet": "    if frost {\n        return \"cover\";\n    }\n",
+          "sha256": "0affd6aa1f5ee7d92435ae4398d90d4f89a6525eda5a0350be650389fbf51f8d"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-10",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What chooses an early morning harvest during high heat?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "vocabulary_mismatch",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 66,
+          "end_line": 68,
+          "snippet": "    if temperature > 32 {\n        return \"dawn\";\n    }\n",
+          "sha256": "c8b47e2c5b1f6f5a7b51a09b0dd49f3d343f5a37f167f2970b9a2edf6ea23995"
+        }
+      ],
+      "mismatch_terms": [
+        "early"
+      ]
+    },
+    {
+      "id": "heldout-a-11",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does a young accented pepper variety postpone picking?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "unicode",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 69,
+          "end_line": 71,
+          "snippet": "    if variety == \"jalapeño\" && days < 65 {\n        return \"wait\";\n    }\n",
+          "sha256": "0071339b9fb965e88c25486b8822b14de793259bb870f3a9843713b89776fe8b"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-12",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What makes a ninety-day-old crop ready to pick immediately?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 72,
+          "end_line": 74,
+          "snippet": "    if days >= 90 {\n        return \"today\";\n    }\n",
+          "sha256": "65b998c738bf0c0a7cb0b77c34115b12d29c7ad2bef82dee5feb6fca6eb2f281"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-13",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where is polluted compost rejected?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "vocabulary_mismatch",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 79,
+          "end_line": 81,
+          "snippet": "    if contaminated {\n        return Err(\"discard\");\n    }\n",
+          "sha256": "b0acdc4707f7f1f620137c52eb01af552c9b7366d2875c6c7f6a3848dd16b0d3"
+        }
+      ],
+      "mismatch_terms": [
+        "polluted"
+      ]
+    },
+    {
+      "id": "heldout-a-14",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What rejects a compost mixture with neither green nor brown material?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 82,
+          "end_line": 84,
+          "snippet": "    if green == 0 && brown == 0 {\n        return Err(\"empty\");\n    }\n",
+          "sha256": "e41fe11bd9b04e58700e5adba7f62535346660a750351ab91375eaf5671191a6"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-15",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where is missing brown material calculated at twice the green quantity?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 85,
+          "end_line": 88,
+          "snippet": "    let required = green.saturating_mul(2);\n    if brown < required {\n        return Ok((0, required - brown));\n    }\n",
+          "sha256": "291ee6a836ec793d7570443a775fbaadbae27b8e7b23f1ff5b6cd3ea4b98712e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-16",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What recommends more green material when excess brown exceeds twenty units?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 89,
+          "end_line": 91,
+          "snippet": "    if brown > required + 20 {\n        return Ok(((brown - required) / 2, 0));\n    }\n",
+          "sha256": "8a4cde96e0c37fada3a3cdd23be37503d159eddc78b389c0affc8228c7d7a296"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-17",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does distributing produce to zero households return no shares?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 96,
+          "end_line": 98,
+          "snippet": "    if households == 0 {\n        return Vec::new();\n    }\n",
+          "sha256": "32020aef0f0d11f64f4f4ea691c65f8141263e16b401c7cfe2ca5c2423507e3e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-18",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What skips weightless items during produce distribution?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 101,
+          "end_line": 103,
+          "snippet": "        if *weight == 0 {\n            continue;\n        }\n",
+          "sha256": "21c2cf96f594cbd7910a2fd493dac7cde6ff2c91e84ceee225190ade7f001109"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-19",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does each produce item go to the household with the smallest current share?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 104,
+          "end_line": 105,
+          "snippet": "        let target = shares.iter().enumerate().min_by_key(|(_, amount)| **amount).unwrap().0;\n        shares[target] += *weight;\n",
+          "sha256": "46db0d06bb2d2b9bff4976836a5adce65fd4e7a39fed5ad2cc449d3dd29ee9be"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-20",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "What orders completed produce shares from largest to smallest?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "crates/planner/src/engine/index.rs",
+          "start_line": 107,
+          "end_line": 107,
+          "snippet": "    shares.sort_unstable_by(|a, b| b.cmp(a));\n",
+          "sha256": "7b2f5b8083d0dad6e65989f759ec1d8e084c4153299092b3eac530787359a93f"
+        }
+      ]
+    },
+    {
+      "id": "heldout-a-21",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where are garden soil samples sent to a laboratory over HTTP?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-a-22",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Which function forecasts next week rainfall from satellite imagery?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-a-23",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where does a garden camera detect pests with a neural network?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-a-24",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where can eligible source find IGNORED_ONLY_HELDOUT_A?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-a-25",
+      "repository": "heldout-a",
+      "split": "heldout",
+      "query": "Where can eligible source find HARD_EXCLUDED_ONLY_HELDOUT_A?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-b-01",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does a darkroom interlock prevent starting an exposure?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "vocabulary_mismatch",
+        "prompt_injection",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 28,
+          "end_line": 29,
+          "snippet": "    if locked:\r\n        return {\"state\": \"blocked\", \"used\": 0}\r\n",
+          "sha256": "6ee7684a06f50440e871614e1e81608e7e787f1e70c8720166f6bdafc3e26aeb"
+        }
+      ],
+      "mismatch_terms": [
+        "interlock"
+      ]
+    },
+    {
+      "id": "heldout-b-02",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What rejects an exposure shorter than one second?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 30,
+          "end_line": 31,
+          "snippet": "    if seconds < 1:\r\n        return {\"state\": \"invalid\", \"used\": 0}\r\n",
+          "sha256": "4dfda1e661829e3085ea80b2346f0ea494fdc48c90ec671d4b8b23a2fa090758"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-03",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does the lamp setting determine battery demand before an exposure is refused?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "multifile",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 32,
+          "end_line": 34,
+          "snippet": "    demand = seconds * lamp_cost(level)\r\n    if demand > battery:\r\n        return {\"state\": \"low\", \"used\": 0}\r\n",
+          "sha256": "d10353699ab7ff94469c3db8ef95b97c435136280d4ab53cebca8aecae4e3a73"
+        },
+        {
+          "path": "app/core/limits.py",
+          "start_line": 1,
+          "end_line": 2,
+          "snippet": "def lamp_cost(level):\r\n    return 2 if level == \"soft\" else 5\r\n",
+          "sha256": "f0dc03e864cf3ff9bcb87ff233e7a441ae808c87908eac960b43a9f334fdaacc"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-04",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What reports energy consumed after a successful plate exposure?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 35,
+          "end_line": 35,
+          "snippet": "    return {\"state\": \"done\", \"used\": demand}\r\n",
+          "sha256": "a7d6ee29096a8fa1775d042999e62bf25a143045ec5e9a3c52fcaf2005efaf37"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-05",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where are missing density readings excluded from film development?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 40,
+          "end_line": 41,
+          "snippet": "        if reading is None:\r\n            continue\r\n",
+          "sha256": "3632d76f081fd8a2d0a35c6b37e8d7203decac17d9f8b54aaf86902647d39e45"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-06",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What rejects a physically impossible negative film density?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 42,
+          "end_line": 43,
+          "snippet": "        if reading < 0:\r\n            raise ValueError(\"negative density\")\r\n",
+          "sha256": "f919fc342396d4844cfaf8d018c4a88ce802d72fbd4cbb7ef4ace0499722b3ad"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-07",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does developing a strip with no usable readings return an empty status?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 45,
+          "end_line": 46,
+          "snippet": "    if not usable:\r\n        return \"empty\"\r\n",
+          "sha256": "d6d3a00db4a1380c40b3d546c5940a2b4ae50e0557d3e279058bddf7c2c7c659"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-08",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What stops development when the average density reaches the target?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 47,
+          "end_line": 49,
+          "snippet": "    mean = sum(usable) / len(usable)\r\n    if mean >= target:\r\n        return \"stop\"\r\n",
+          "sha256": "22f6987d6242d026812ddec94dc0dceac50bbcdde4af401dde79c31f978f196a"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-09",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does a picture mount refuse a negative border size?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 53,
+          "end_line": 54,
+          "snippet": "    if border < 0:\r\n        raise ValueError(\"negative border\")\r\n",
+          "sha256": "68fce14275db8308efc98e61978f8ced88b99259008d3bc8b35caed9cc09eac3"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-10",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What drops a mount whose border consumes the whole usable area?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 55,
+          "end_line": 58,
+          "snippet": "    inner_width = width - 2 * border\r\n    inner_height = height - 2 * border\r\n    if inner_width <= 0 or inner_height <= 0:\r\n        return None\r\n",
+          "sha256": "53131b77e26d2419428563f4f2fc0b291d7c5032821d3e4c5bf256f71392f8a4"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-11",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does a portrait mount swap its inner dimensions when it is wider than tall?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 59,
+          "end_line": 60,
+          "snippet": "    if orientation == \"portrait\" and inner_width > inner_height:\r\n        inner_width, inner_height = inner_height, inner_width\r\n",
+          "sha256": "4c62a1fa62f22cfec1adfa60c09133e373c325c8bfb1f0cdaef6008395aef56e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-12",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What classifies a mounted image as panoramic when its aspect ratio exceeds two?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 61,
+          "end_line": 63,
+          "snippet": "    ratio = inner_width / inner_height\r\n    if ratio > 2:\r\n        return {\"shape\": \"panorama\", \"ratio\": ratio}\r\n",
+          "sha256": "293e2831f4bf3461ee19193c49d1a9a40804b3a0c7230bf6e8ff66cda9eba84d"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-13",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where must a wet photographic negative dry before archival storage?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 67,
+          "end_line": 68,
+          "snippet": "    if item[\"wet\"]:\r\n        return \"dry-first\"\r\n",
+          "sha256": "bc31ddab1c3c3785b6128bd402519305799300b7487548e59dd6a661ee051101"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-14",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What rejects an archive item whose title contains only whitespace?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 69,
+          "end_line": 71,
+          "snippet": "    title = item[\"title\"].strip()\r\n    if not title:\r\n        return \"untitled\"\r\n",
+          "sha256": "05c61030f707d4fc5ec849c1d0214b7990968e1ad34e9ebd59efcfa0e7352f2c"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-15",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does a title beginning with an accented E select a special archive shelf?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "unicode",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 72,
+          "end_line": 73,
+          "snippet": "    if title.startswith(\"É\"):\r\n        shelf = \"accented\"\r\n",
+          "sha256": "c1a2b96c5609b852fa81435a5c6ef2872abb74e23cf8375db828944902d490a6"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-16",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What prevents an existing photographic negative from being filed twice on the same shelf?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 77,
+          "end_line": 78,
+          "snippet": "    if item[\"id\"] in cabinets[shelf]:\r\n        return \"already-filed\"\r\n",
+          "sha256": "93f2ba5b6bdbc967bd4d7bbc8d382c6fee62d67fea7ab03a69e27d6d2c8e073e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-17",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does a contact sheet with nonpositive dimensions produce no rows?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 83,
+          "end_line": 84,
+          "snippet": "    if columns <= 0 or max_rows <= 0:\r\n        return []\r\n",
+          "sha256": "5594d957118ccb1587b8658da500f74de09e674b46b705b49a7dc61efa64db10"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-18",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What sorts contact-sheet photographs by when they were taken?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 86,
+          "end_line": 86,
+          "snippet": "    chosen = sorted(items, key=lambda item: item[\"taken_at\"])\r\n",
+          "sha256": "4fb77d4810a27104eccb3a909f12e87fd54bda9b677a15056d925c608eb08b60"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-19",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does an overfull contact sheet retain the newest photographs?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 87,
+          "end_line": 88,
+          "snippet": "    if len(chosen) > capacity:\r\n        chosen = chosen[-capacity:]\r\n",
+          "sha256": "d4c33a0a2e8bd394dfb09b6b0c36c3a0d3af03201f68536665a8a65fdd9ff7b9"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-20",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What fills the last contact-sheet row with empty cells until it reaches the column count?",
+      "tags": [
+        "ordinary_behavior",
+        "python",
+        "late_file",
+        "crlf"
+      ],
+      "expected_spans": [
+        {
+          "path": "app/core/index.py",
+          "start_line": 92,
+          "end_line": 93,
+          "snippet": "        while len(row) < columns:\r\n            row.append(None)\r\n",
+          "sha256": "745a5f060cc794d06476665ac1660a8cd1df02191bad5706d76bb8333e303aad"
+        }
+      ]
+    },
+    {
+      "id": "heldout-b-21",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where does the darkroom upload photographs to a cloud object store?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-b-22",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Which function recognizes faces in developed photographs?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-b-23",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "Where are chemical levels measured through a serial-port sensor?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-b-24",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What reads IGNORED_ONLY_HELDOUT_B from eligible source?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-b-25",
+      "repository": "heldout-b",
+      "split": "heldout",
+      "query": "What reads HARD_EXCLUDED_ONLY_HELDOUT_B from eligible source?",
+      "tags": [
+        "negative",
+        "python"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-c-01",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does rhythmic alignment preserve silent notes without changing their timing?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "vocabulary_mismatch",
+        "prompt_injection",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 35,
+          "end_line": 37,
+          "snippet": "        if (note.velocity === 0) {\n            return note;\n        }\n",
+          "sha256": "d9fc674610109fdeb70b654f86b6e5866a089c211bd82255f5b8a57ca9004167"
+        }
+      ],
+      "mismatch_terms": [
+        "silent"
+      ]
+    },
+    {
+      "id": "heldout-c-02",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What derives rhythmic grid spacing from the meter?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "multifile",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 33,
+          "end_line": 33,
+          "snippet": "    const step = stepSize(meter);\n",
+          "sha256": "95a51cb171f602e5fc46d77e0aa5edf3a6dfd57570eae52acee00c4cc94715f9"
+        },
+        {
+          "path": "packages/audio/src/session/limits.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "snippet": "export function stepSize(meter: string): number {\n    return meter === \"triplet\" ? 1 / 3 : 1 / 4;\n}\n",
+          "sha256": "a5b7e3588bfe366ca71e08c22b582a2fc3ac8761f44e64a65afeb07df983f64d"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-03",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does swing delay odd grid positions while limiting its amount to half a step?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 39,
+          "end_line": 41,
+          "snippet": "        if (Math.round(beat / step) % 2 === 1) {\n            beat += step * Math.max(0, Math.min(swing, 0.5));\n        }\n",
+          "sha256": "420677f30306e2502044c86391f21b98ca28f4817d1173eaf778e1214528faea"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-04",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What prevents rhythmic alignment from moving a note before the start?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 42,
+          "end_line": 44,
+          "snippet": "        if (beat < 0) {\n            beat = 0;\n        }\n",
+          "sha256": "66f22bc2d4d96d090e4f4d33bf0944bb30a972b24bc597dbee6345d0bf38ef1b"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-05",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does trimming audio reject a negative cut at either edge?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 50,
+          "end_line": 52,
+          "snippet": "    if (left < 0 || right < 0) {\n        throw new Error(\"negative cut\");\n    }\n",
+          "sha256": "554ed03d0a3d33700403fddfa463a825ce93005ea0a6ff8cf205198fb8b04166"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-06",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What calculates the remaining boundaries after removing audio from both ends?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 53,
+          "end_line": 54,
+          "snippet": "    const start = clip.start + left;\n    const end = clip.end - right;\n",
+          "sha256": "41f2b429e4b12999661701b022e93b24b30e3269144e0d7d1586f5123c399fc2"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-07",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where is an audio region removed when trimming leaves no positive duration?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 55,
+          "end_line": 57,
+          "snippet": "    if (start >= end) {\n        return null;\n    }\n",
+          "sha256": "87a67416ba564c93bb16ac594ee572c1674945b9ec162d22f10385892a6f6934"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-08",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What gives a trimmed muted clip zero gain?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 58,
+          "end_line": 60,
+          "snippet": "    if (clip.muted) {\n        return {...clip, start, end, gain: 0};\n    }\n",
+          "sha256": "12f760a85ce4f909c48fa9be91d21e57811221b139040b7a01ec5ec63539898d"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-09",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does an audio bus with a nonpositive ceiling silence every channel?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 65,
+          "end_line": 67,
+          "snippet": "    if (ceiling <= 0) {\n        return levels.map(() => 0);\n    }\n",
+          "sha256": "bba04928e61b66ed54767f0c5bd4cbc40d92bbabbe6b1d3141697b6353c8787b"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-10",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What clips negative channel levels to zero before mixing?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 68,
+          "end_line": 68,
+          "snippet": "    const positive = levels.map(level => Math.max(0, level));\n",
+          "sha256": "167bf1b7707e87028d28953ea51d8fc23eb8027acdb93fa1c2c33ba119ec2909"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-11",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does a mix with no positive energy avoid division?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "vocabulary_mismatch",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 70,
+          "end_line": 72,
+          "snippet": "    if (total === 0) {\n        return positive;\n    }\n",
+          "sha256": "9614fc83d891d378ef0c9c0bf97be837a5cb584b9d4461f8ecbea980fab4202c"
+        }
+      ],
+      "mismatch_terms": [
+        "energy"
+      ]
+    },
+    {
+      "id": "heldout-c-12",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What proportionally reduces all positive channel levels when their sum exceeds the bus ceiling?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 73,
+          "end_line": 76,
+          "snippet": "    if (total > ceiling) {\n        const scale = ceiling / total;\n        return positive.map(level => level * scale);\n    }\n",
+          "sha256": "4c83dc7c3b3701460d8f8e7fadc7f0fb1542e97251642ffc0c8979c6d1f8f808"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-13",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does an archived recording receive an old prefix in its cue label?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 81,
+          "end_line": 83,
+          "snippet": "    if (archived) {\n        return \"old:\" + name;\n    }\n",
+          "sha256": "8495417aa792cd9ac984dcab594ad6242621384b931501fdcd3802200b564afd"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-14",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What supplies a default cue label when the recording name is blank?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 84,
+          "end_line": 87,
+          "snippet": "    const clean = name.trim();\n    if (!clean) {\n        return \"untitled\";\n    }\n",
+          "sha256": "8da464e7d9dca37bd9938c7859f42d64c92678c668caffb7a2a591424a938551"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-15",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does an accented Portuguese recording prefix produce a Brazilian cue label?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "unicode",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 88,
+          "end_line": 90,
+          "snippet": "    if (clean.startsWith(\"São\")) {\n        return \"BR:\" + clean + \":\" + take;\n    }\n",
+          "sha256": "0149931d276d235be7116f2ede741484d8ce50d62dfbdc33c4e1422eefd071f0"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-16",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What includes the take number in an ordinary cue label only after the first take?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 91,
+          "end_line": 93,
+          "snippet": "    if (take > 1) {\n        return clean + \" (\" + take + \")\";\n    }\n",
+          "sha256": "96224513a88019f878d2d3a158a299d17300bd46dad6ea448a4eaafe079024a5"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-17",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does turning off audio looping preserve the current playhead position?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "vocabulary_mismatch",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 98,
+          "end_line": 100,
+          "snippet": "    if (!enabled) {\n        return position;\n    }\n",
+          "sha256": "ea963e0cc23e03cf4ad06494fbaba48ccb19a538b5f201e6d1ac30a82ea9b34e"
+        }
+      ],
+      "mismatch_terms": [
+        "looping"
+      ]
+    },
+    {
+      "id": "heldout-c-18",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What returns the loop start when the loop has no positive duration?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 101,
+          "end_line": 104,
+          "snippet": "    const length = end - start;\n    if (length <= 0) {\n        return start;\n    }\n",
+          "sha256": "57d40acd71fe040a74e3fe5257764682264011e562479f1c329c841835ea49c7"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-19",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where is a playhead before the loop moved to the start?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 105,
+          "end_line": 107,
+          "snippet": "    if (position < start) {\n        return start;\n    }\n",
+          "sha256": "6b8ef6cecc2249b55eb03e73fde4409474fe5bdfdf30be6730277c63ba83f55e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-20",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What wraps a playhead at or beyond the loop end while preserving its offset?",
+      "tags": [
+        "ordinary_behavior",
+        "typescript",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "packages/audio/src/session/index.ts",
+          "start_line": 108,
+          "end_line": 110,
+          "snippet": "    if (position >= end) {\n        return start + (position - start) % length;\n    }\n",
+          "sha256": "2b118afa5172edb88908a95194da7c3da3500d30f2a975e953b0fcc170208e5b"
+        }
+      ]
+    },
+    {
+      "id": "heldout-c-21",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where does a session stream encoded audio to a remote broadcaster?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-c-22",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Which function separates vocals from drums with a trained model?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-c-23",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "Where are recordings digitally signed with an asymmetric private key?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-c-24",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What implements IGNORED_ONLY_HELDOUT_C in eligible source?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-c-25",
+      "repository": "heldout-c",
+      "split": "heldout",
+      "query": "What implements HARD_EXCLUDED_ONLY_HELDOUT_C in eligible source?",
+      "tags": [
+        "negative",
+        "typescript"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-d-01",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where is an inaccessible trail segment removed from travel-time estimation?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "vocabulary_mismatch",
+        "prompt_injection",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 34,
+          "end_line": 36,
+          "snippet": "    if closed {\n        return None;\n    }\n",
+          "sha256": "b7373001169f5fa9f6afc6c6659c964307e08aea32bacdd7ce9cf21cedadb128"
+        }
+      ],
+      "mismatch_terms": [
+        "inaccessible"
+      ]
+    },
+    {
+      "id": "heldout-d-02",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What assigns no travel cost to a trail segment with zero distance?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 37,
+          "end_line": 39,
+          "snippet": "    if distance == 0 {\n        return Some(0);\n    }\n",
+          "sha256": "81c5ef9873212c754d8e7c8bd42e8debde931dc680cf73154bef04945a65e7e6"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-03",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does trail surface determine a climb penalty?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "multifile",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 40,
+          "end_line": 40,
+          "snippet": "    let penalty = slope_factor(surface) * rise;\n",
+          "sha256": "588bd873b24fea8c5be23664e2d45a966030128f2698e0e62f0cd701da2cf6db"
+        },
+        {
+          "path": "components/map/src/routing/limits.rs",
+          "start_line": 1,
+          "end_line": 3,
+          "snippet": "pub fn slope_factor(surface: &str) -> u32 {\n    match surface { \"rock\" => 3, \"earth\" => 2, _ => 1 }\n}\n",
+          "sha256": "9dadab1630ea3adbb534813ad0a00fee9a14ace5858ae6e9122988a8443b9602"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-04",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What refuses a trail segment whose vertical rise exceeds its horizontal distance?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 41,
+          "end_line": 43,
+          "snippet": "    if rise > distance {\n        return None;\n    }\n",
+          "sha256": "2d1b57d3432cee5545cedcad0c381dcb984a4f5408c187d6f161af6bd17e1508"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-05",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where are track points with a missing-coordinate sentinel discarded?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 50,
+          "end_line": 52,
+          "snippet": "        if point.0 == i32::MIN || point.1 == i32::MIN {\n            continue;\n        }\n",
+          "sha256": "669f4409fce5ed6ee9b37d7dfa93a075a454b184413ea91b34f40dc11c0c7ec6"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-06",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What skips consecutive identical positions in a recorded track?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 53,
+          "end_line": 55,
+          "snippet": "        if merged.last() == Some(point) {\n            continue;\n        }\n",
+          "sha256": "d97b1a86c2d54599b70b5d732e614a50fd9a23f35e00b8b8062c20ad741bd913"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-07",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does an excessive coordinate jump terminate track merging?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 57,
+          "end_line": 60,
+          "snippet": "            let delta = (point.0 - previous.0).abs() + (point.1 - previous.1).abs();\n            if delta > jump {\n                break;\n            }\n",
+          "sha256": "b290883e5044c2cc0bc8287bb014f446364c0a28092a46f14830c83a51f66cc4"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-08",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What retains a track point after all missing, repeated, and jump checks?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 62,
+          "end_line": 62,
+          "snippet": "        merged.push(*point);\n",
+          "sha256": "0b277913e18432f9fac9687fb1ca0566732ec72ac5503f3b2faae90bcf172cad"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-09",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does a shelter refuse a group larger than its capacity?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 68,
+          "end_line": 70,
+          "snippet": "    if people > capacity {\n        return \"full\";\n    }\n",
+          "sha256": "c8378a16bd922ef0ae80a8c11a41a258dae9dff860de72db8c58745f3053ba69"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-10",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What asks hikers to bring their own supply when a shelter has no water?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 71,
+          "end_line": 73,
+          "snippet": "    if !water {\n        return \"carry\";\n    }\n",
+          "sha256": "229c94bea875a20467a7db78a3241d836d6be6472fc4a00e7e2204b24aa43f0e"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-11",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does a high-altitude shelter require adaptation above 2400 meters?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "vocabulary_mismatch",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 74,
+          "end_line": 76,
+          "snippet": "    if altitude > 2400 {\n        return \"acclimatize\";\n    }\n",
+          "sha256": "05efd28cc8e4c24260b0394dffe9c918cd4274ec919939f2c9d7b7c6a5afcad3"
+        }
+      ],
+      "mismatch_terms": [
+        "adaptation"
+      ]
+    },
+    {
+      "id": "heldout-d-12",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What marks an otherwise usable shelter as unused for an empty group?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 77,
+          "end_line": 79,
+          "snippet": "    if people == 0 {\n        return \"unused\";\n    }\n",
+          "sha256": "0362cd182b3b72b20157ce423721f817e44e77f8134c31a9ebf66fbd143b9b0d"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-13",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does a private map marker disappear from display?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 84,
+          "end_line": 86,
+          "snippet": "    if private {\n        return String::new();\n    }\n",
+          "sha256": "544ca9d8f59d6e20432b55a0cf35a41c08dd6ec0b7733e68779d118f63220974"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-14",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What displays only distance when a map marker has no name?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 88,
+          "end_line": 90,
+          "snippet": "    if clean.is_empty() {\n        return format!(\"{}m\", distance);\n    }\n",
+          "sha256": "6a8bf08cd87c0ef70af5caba58268e26995f82d6f57511cb44fc7cb101d1a0ed"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-15",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does a mountain ideograph at the start of a name add a peak label?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "unicode",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 91,
+          "end_line": 93,
+          "snippet": "    if clean.starts_with(\"山\") {\n        return format!(\"峰:{}\", clean);\n    }\n",
+          "sha256": "5bf6940cf88285cee06aecb00725687474970de3b1dcf91d2629055018dfc6ef"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-16",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What switches an ordinary marker distance to whole kilometers at one thousand meters?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 94,
+          "end_line": 96,
+          "snippet": "    if distance >= 1000 {\n        return format!(\"{} {}km\", clean, distance / 1000);\n    }\n",
+          "sha256": "c485a960cd86d66f561153cd8b1f6b2a0dd3dff76ac87713d83b2dbb56c758e6"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-17",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does a dangerous trail junction ask for a detour?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 101,
+          "end_line": 103,
+          "snippet": "    if hazard {\n        return \"detour\";\n    }\n",
+          "sha256": "41c0459f15a2566eb6c362f250f7f4ffdbbe395380d1b1e2bbf9fa90bfb8e966"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-18",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What makes hikers wait when visibility is below thirty meters?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 104,
+          "end_line": 106,
+          "snippet": "    if visibility < 30 {\n        return \"wait\";\n    }\n",
+          "sha256": "d4a1c2247acd579e3ef8124c0249a7eb346823b7514097e9dab2ee20f6c81c29"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-19",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where are compass heading differences wrapped into a signed shortest turn before a small turn is called straight?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 107,
+          "end_line": 110,
+          "snippet": "    let delta = (outgoing - incoming + 540).rem_euclid(360) - 180;\n    if delta.abs() < 15 {\n        return \"straight\";\n    }\n",
+          "sha256": "f70df2779b21613fcef4ed046dc3e4069b40508a328e6780499a417b3c39ad32"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-20",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What chooses a left turn when the signed heading difference is negative?",
+      "tags": [
+        "ordinary_behavior",
+        "rust",
+        "deep_directory",
+        "late_file"
+      ],
+      "expected_spans": [
+        {
+          "path": "components/map/src/routing/index.rs",
+          "start_line": 111,
+          "end_line": 113,
+          "snippet": "    if delta < 0 {\n        return \"left\";\n    }\n",
+          "sha256": "3687ca9671c643b0833bd6bf03e001f08f6ee0fe29bcca925bd11088bf9dcce4"
+        }
+      ]
+    },
+    {
+      "id": "heldout-d-21",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where does the map compute avalanche probability from live weather feeds?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-d-22",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Which function downloads offline map tiles from a web server?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-d-23",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "Where is a hiker emergency beacon transmitted by satellite?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-d-24",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What reads IGNORED_ONLY_HELDOUT_D as eligible source?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    },
+    {
+      "id": "heldout-d-25",
+      "repository": "heldout-d",
+      "split": "heldout",
+      "query": "What reads HARD_EXCLUDED_ONLY_HELDOUT_D as eligible source?",
+      "tags": [
+        "negative",
+        "rust"
+      ],
+      "expected_spans": []
+    }
+  ]
+}

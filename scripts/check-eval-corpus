@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Check fixture labels without a model or a retrieval implementation."""
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path, PurePosixPath
+
+
+COUNTS = {"calibration": (2, 30, 10), "heldout": (4, 80, 20)}
+LANGUAGES = {"python": ".py", "typescript": ".ts", "rust": ".rs"}
+TAGS = set(LANGUAGES) | {
+    "ordinary_behavior", "vocabulary_mismatch", "deep_directory", "multifile",
+    "late_file", "unicode", "crlf", "prompt_injection", "negative",
+}
+FUNCTION = re.compile(r"\b(?:def|function|fn)\s+([A-Za-z_]\w*)\s*\(")
+
+
+class CorpusError(ValueError):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise CorpusError(message)
+
+
+def confined(base, name):
+    require(isinstance(name, str) and name != "", "path must be a nonempty string")
+    path = PurePosixPath(name)
+    require(not path.is_absolute() and ".." not in path.parts and "\\" not in name,
+            "unsafe path: " + name)
+    require(str(path) == name, "path must be normalized: " + name)
+    target = base / name
+    require(not target.is_symlink(), "symlink is not a fixture: " + name)
+    require(target.resolve().is_relative_to(base.resolve()), "path escapes fixture: " + name)
+    require(target.is_file(), "missing file: " + name)
+    return target
+
+
+def validate(corpus_path):
+    base = corpus_path.parent
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    require(isinstance(corpus, dict) and corpus.get("schema_version") == 1, "unsupported schema")
+    require(isinstance(corpus.get("repositories"), list), "repositories must be a list")
+    require(isinstance(corpus.get("questions"), list), "questions must be a list")
+    repositories = {}
+    sources = {}
+    source_owners = {}
+    names_by_split = defaultdict(set)
+    hashes_by_split = defaultdict(set)
+    repo_counts = Counter()
+    for repo in corpus["repositories"]:
+        require(isinstance(repo, dict), "repository must be an object")
+        ident = repo.get("id")
+        split = repo.get("split")
+        language = repo.get("language")
+        require(isinstance(ident, str) and re.fullmatch(r"(?:calibration|heldout)-[a-d]", ident),
+                "invalid repository id")
+        require(ident not in repositories, "duplicate repository: " + ident)
+        require(split in COUNTS and ident.startswith(split + "-"), "invalid repository split")
+        require(language in LANGUAGES, "invalid language: " + ident)
+        require(repo.get("root") == "fixtures/" + ident, "repository root must match id")
+        root = base / repo["root"]
+        require(root.is_dir() and not root.is_symlink(), "invalid repository root")
+        require(root.resolve().is_relative_to(base.resolve()), "repository root escapes corpus")
+        files = repo.get("source_files")
+        excluded = repo.get("excluded_files")
+        require(isinstance(files, list) and len(files) >= 3 and len(files) == len(set(files)),
+                "repository needs at least three unique source files")
+        require(isinstance(excluded, list) and len(excluded) >= 2 and len(excluded) == len(set(excluded)),
+                "repository needs unique exclusion fixtures")
+        require(not set(files) & set(excluded), "source and excluded files overlap")
+        require(confined(root, ".gitignore").read_text().splitlines() == ["scratch/"],
+                "unexpected fixture ignore rule")
+        actual = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+        require(actual == set(files) | set(excluded) | {".gitignore"}, "unlisted repository files")
+        for name in excluded:
+            text = confined(root, name).read_text(encoding="utf-8")
+            require(name.startswith("scratch/") or "node_modules" in PurePosixPath(name).parts,
+                    "excluded file must exercise an ignore rule or hard exclusion")
+            marker = ("IGNORED_ONLY_" if name.startswith("scratch/") else "HARD_EXCLUDED_ONLY_")
+            require(text.strip() == marker + ident.upper().replace("-", "_"), "invalid exclusion sentinel")
+        for name in files:
+            require(PurePosixPath(name).suffix == LANGUAGES[language], "source language mismatch")
+            require(not name.startswith("scratch/") and "node_modules" not in PurePosixPath(name).parts,
+                    "excluded path labeled as source")
+            target = confined(root, name)
+            raw = target.read_bytes()
+            text = raw.decode("utf-8")
+            require(text.strip(), "empty source file")
+            key = (ident, name)
+            sources[key] = (raw, text, text.splitlines(keepends=True))
+            require(target.resolve() not in source_owners, "shared source file across repositories")
+            source_owners[target.resolve()] = ident
+            names_by_split[split].update(FUNCTION.findall(text))
+            hashes_by_split[split].add(hashlib.sha256(text.replace("\r\n", "\n").encode()).hexdigest())
+        repositories[ident] = repo
+        repo_counts[split] += 1
+    require(not names_by_split["calibration"] & names_by_split["heldout"], "function names cross splits")
+    require(not hashes_by_split["calibration"] & hashes_by_split["heldout"], "source content crosses splits")
+    expected_ids = {"calibration-a", "calibration-b", "heldout-a", "heldout-b", "heldout-c", "heldout-d"}
+    require(set(repositories) == expected_ids, "unexpected repository set")
+
+    ids = set()
+    queries = set()
+    by_repo = Counter()
+    answerable = Counter()
+    negative = Counter()
+    tag_counts = Counter()
+    split_tags = defaultdict(Counter)
+    spans_count = 0
+    for question in corpus["questions"]:
+        require(isinstance(question, dict), "question must be an object")
+        ident = question.get("id")
+        repo_id = question.get("repository")
+        require(repo_id in repositories, "unknown question repository")
+        require(isinstance(ident, str) and re.fullmatch(re.escape(repo_id) + r"-\d{2}", ident),
+                "invalid question id")
+        require(ident not in ids, "duplicate question id: " + ident)
+        ids.add(ident)
+        split = question.get("split")
+        require(split == repositories[repo_id]["split"], "question crosses split: " + ident)
+        query = question.get("query")
+        require(isinstance(query, str) and len(query.strip()) >= 20, "query must be substantive")
+        require(query == query.strip() and "\n" not in query, "query must be a single clean line")
+        require(query.casefold() not in queries, "duplicate query")
+        queries.add(query.casefold())
+        tags = question.get("tags")
+        require(isinstance(tags, list) and tags and all(isinstance(tag, str) for tag in tags), "invalid tags")
+        require(len(tags) == len(set(tags)) and set(tags) <= TAGS, "unknown or duplicate tag")
+        require(set(tags) & set(LANGUAGES) == {repositories[repo_id]["language"]}, "missing or incorrect language tag")
+        spans = question.get("expected_spans")
+        require(isinstance(spans, list), "expected spans must be a list")
+        require(("negative" in tags) == (not spans), "negative must have empty spans: " + ident)
+        require(("ordinary_behavior" in tags) == bool(spans), "answerable behavior tag mismatch")
+        tag_counts.update(tags)
+        split_tags[split].update(tags)
+        by_repo[repo_id] += 1
+        (answerable if spans else negative)[split] += 1
+        seen_spans = set()
+        selected_sources = []
+        for span in spans:
+            require(isinstance(span, dict), "span must be an object")
+            name = span.get("path")
+            require(isinstance(name, str) and (repo_id, name) in sources, "span must reference eligible source")
+            confined(base / repositories[repo_id]["root"], name)
+            raw, text, lines = sources[(repo_id, name)]
+            start, end = span.get("start_line"), span.get("end_line")
+            require(type(start) is int and type(end) is int and 1 <= start <= end <= len(lines),
+                    "invalid source range: " + ident)
+            location = (name, start, end)
+            require(location not in seen_spans, "duplicate expected span")
+            seen_spans.add(location)
+            excerpt = "".join(lines[start - 1:end])
+            require(excerpt.strip() and excerpt == span.get("snippet"), "snippet differs from source: " + ident)
+            require(hashlib.sha256(excerpt.encode("utf-8")).hexdigest() == span.get("sha256"),
+                    "snippet hash differs: " + ident)
+            require(any(line.strip() and not line.lstrip().startswith(("#", "//")) for line in excerpt.splitlines()),
+                    "span contains only comments")
+            selected_sources.append((raw, text, start, end, name, excerpt))
+            spans_count += 1
+        require(("multifile" in tags) == (len({span["path"] for span in spans}) > 1), "multifile tag mismatch")
+        if "deep_directory" in tags:
+            require(any(len(PurePosixPath(item[4]).parts) >= 5 for item in selected_sources), "missing deep target")
+        if "late_file" in tags:
+            require(any(item[2] > 80 and len(item[1].splitlines()) > 80 for item in selected_sources), "missing late target")
+        if "unicode" in tags:
+            require(any(any(ord(char) > 127 for char in item[5]) for item in selected_sources), "missing Unicode span")
+        if "crlf" in tags:
+            require(any(b"\r\n" in item[0] and b"\n" not in item[0].replace(b"\r\n", b"") for item in selected_sources),
+                    "missing CRLF source")
+        if "prompt_injection" in tags:
+            require(any(re.search(r"ignore|disregard", item[1], re.I) for item in selected_sources), "missing instruction text")
+        terms = question.get("mismatch_terms", [])
+        require(isinstance(terms, list) and all(isinstance(term, str) and term for term in terms), "invalid mismatch terms")
+        require(bool(terms) == ("vocabulary_mismatch" in tags), "mismatch terms do not match tag")
+        for term in terms:
+            require(re.search(r"\b" + re.escape(term) + r"\b", query, re.I), "mismatch term missing from query")
+            require(all(term.casefold() not in {token.casefold() for token in re.findall(r"\b\w+\b", item[1])}
+                        for item in selected_sources), "mismatch term present in source")
+    for split, (repos, answers, negatives) in COUNTS.items():
+        require((repo_counts[split], answerable[split], negative[split]) == (repos, answers, negatives),
+                "incorrect split counts: " + split)
+        for tag in TAGS - set(LANGUAGES) - {"deep_directory"}:
+            require(split_tags[split][tag] > 0, "missing split coverage: " + split + " " + tag)
+    require(tag_counts["deep_directory"] > 0, "missing deep directory coverage")
+    for repo_id, repo in repositories.items():
+        expected = 20 if repo["split"] == "calibration" else 25
+        require(by_repo[repo_id] == expected, "incorrect repository question count")
+        require(sum(not q["expected_spans"] for q in corpus["questions"] if q["repository"] == repo_id) == 5,
+                "incorrect repository negative count")
+    return {
+        "status": "pass", "repositories": len(repositories), "questions": len(ids), "spans": spans_count,
+        "splits": {split: {"repositories": repo_counts[split], "answerable": answerable[split],
+                           "negative": negative[split]} for split in COUNTS},
+        "tags": dict(sorted(tag_counts.items())),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--corpus", type=Path,
+                        default=Path(__file__).resolve().parents[1] / "tests/eval/corpus.json")
+    args = parser.parse_args()
+    try:
+        result = validate(args.corpus)
+    except (CorpusError, OSError, UnicodeError, json.JSONDecodeError) as error:
+        print(json.dumps({"status": "fail", "error": str(error)}, separators=(",", ":")), file=sys.stderr)
+        return 1
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

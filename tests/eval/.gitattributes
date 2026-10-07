@@ -1,0 +1,2 @@
+fixtures/calibration-b/lib/*.ts -text whitespace=cr-at-eol
+fixtures/heldout-b/app/core/*.py -text whitespace=cr-at-eol
