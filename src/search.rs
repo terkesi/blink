@@ -1,4 +1,5 @@
 mod bounds;
+mod navigation;
 
 use crate::{
     provider::{Batch, Candidate, Failure, Judgment, Provider},
@@ -442,9 +443,15 @@ impl Report {
 }
 
 #[derive(Clone)]
+enum Purpose {
+    Route(Vec<usize>),
+    Source(Vec<usize>),
+}
+
+#[derive(Clone)]
 struct Job {
     batch: Batch,
-    indices: Vec<usize>,
+    purpose: Purpose,
     retried: bool,
     ready: tokio::time::Instant,
 }
@@ -471,6 +478,26 @@ pub async fn execute(
     .await
 }
 
+fn source_batch(prepared: &Prepared, query: &str, indices: &[usize]) -> Result<Batch, Failure> {
+    let names: Vec<_> = indices.iter().map(|index| format!("w{index}")).collect();
+    let candidates: Vec<_> = indices
+        .iter()
+        .zip(&names)
+        .map(|(&index, name)| {
+            let window = &prepared.windows[index];
+            let file = &prepared.snapshot.files()[window.file];
+            Candidate {
+                name,
+                path: file.path(),
+                text: &file.text()[window.start..window.end],
+                start_line: window.start_line,
+                end_line: window.end_line,
+            }
+        })
+        .collect();
+    Batch::encode(query, &candidates)
+}
+
 async fn execute_with_policy(
     source: Source,
     query: String,
@@ -493,39 +520,23 @@ async fn execute_with_policy(
     let mut prepared = prepare(&source, &query, &options, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
-    for indices in prepared.selected.chunks(BATCH_SIZE) {
-        if control() != Control::Continue {
-            break;
-        }
-        let names: Vec<_> = indices.iter().map(|index| format!("w{index}")).collect();
-        let candidates: Vec<_> = indices
-            .iter()
-            .zip(&names)
-            .map(|(&index, name)| {
-                let window = &prepared.windows[index];
-                let file = &prepared.snapshot.files()[window.file];
-                Candidate {
-                    name,
-                    path: file.path(),
-                    text: &file.text()[window.start..window.end],
-                    start_line: window.start_line,
-                    end_line: window.end_line,
-                }
-            })
-            .collect();
-        match Batch::encode(&query, &candidates) {
-            Ok(batch) => queue.push_back(Job {
-                batch,
-                indices: indices.to_vec(),
-                retried: false,
-                ready: tokio::time::Instant::now(),
-            }),
-            Err(error) => errors.push(SearchError {
-                code: error.code(),
-                status: error.status(),
-            }),
-        }
+    let mut frontier = navigation::Frontier::new(&prepared);
+    match frontier.routes(&prepared, &query, &mut { &control }) {
+        Ok(routes) => queue.extend(routes.into_iter().map(|(batch, ids)| Job {
+            batch,
+            purpose: Purpose::Route(ids),
+            retried: false,
+            ready: tokio::time::Instant::now(),
+        })),
+        Err(error) => errors.push(SearchError {
+            code: error.code(),
+            status: error.status(),
+        }),
     }
+    let mut routes_pending = queue.len();
+    let mut source_jobs = 0;
+    let mut source_exhausted = false;
+    let mut selected = BTreeSet::new();
     let mut tasks = JoinSet::new();
     let mut used = Reservation::default();
     let mut retries = 0;
@@ -549,16 +560,43 @@ async fn execute_with_policy(
             }
             Control::Continue => {}
         }
-        while tasks.len() < CONCURRENCY && !queue.is_empty() {
+        while tasks.len() < CONCURRENCY {
             if control() != Control::Continue {
                 break;
             }
-            let job = queue.pop_front().expect("queue is nonempty");
             let now = tokio::time::Instant::now();
-            if job.ready > now {
-                queue.push_front(job);
+            let job = if queue.front().is_some_and(|job| job.ready <= now) {
+                queue.pop_front().expect("ready job")
+            } else if !source_exhausted && (routes_pending == 0 || source_jobs < 2) {
+                if used.attempts == policy.max_attempts {
+                    stops.insert("attempt_limit");
+                    source_exhausted = true;
+                    break;
+                }
+                let Some(indices) = frontier.next(&mut { &control }) else {
+                    source_exhausted = true;
+                    break;
+                };
+                selected.extend(indices.iter().copied());
+                source_jobs += 1;
+                match source_batch(&prepared, &query, &indices) {
+                    Ok(batch) => Job {
+                        batch,
+                        purpose: Purpose::Source(indices),
+                        retried: false,
+                        ready: now,
+                    },
+                    Err(error) => {
+                        errors.push(SearchError {
+                            code: error.code(),
+                            status: error.status(),
+                        });
+                        continue;
+                    }
+                }
+            } else {
                 break;
-            }
+            };
             let Some(reservation) = reserve(
                 used,
                 job.batch.encoded_len(),
@@ -570,6 +608,9 @@ async fn execute_with_policy(
                 } else {
                     "request_byte_limit"
                 });
+                if matches!(job.purpose, Purpose::Route(_)) {
+                    routes_pending -= 1;
+                }
                 if job.retried {
                     errors.push(SearchError {
                         code: "retry_budget",
@@ -580,7 +621,9 @@ async fn execute_with_policy(
             };
             used = reservation;
             retries += usize::from(job.retried);
-            sent.extend(job.indices.iter().copied());
+            if let Purpose::Source(indices) = &job.purpose {
+                sent.extend(indices.iter().copied());
+            }
             let provider = provider.clone();
             let attempt_deadline =
                 tokio::time::Instant::from_std(deadline).min(now + policy.attempt_timeout);
@@ -595,7 +638,7 @@ async fn execute_with_policy(
                 (job, outcome)
             });
         }
-        if tasks.is_empty() && queue.is_empty() {
+        if tasks.is_empty() && queue.is_empty() && source_exhausted {
             break;
         }
         let wake = if tasks.len() < CONCURRENCY {
@@ -613,8 +656,16 @@ async fn execute_with_policy(
                     errors.push(SearchError { code: "coordinator_task", status: None });
                     continue;
                 };
+                if matches!(job.purpose, Purpose::Route(_)) { routes_pending -= 1; }
                 match outcome {
                     Attempt::Response(Ok(judgments)) => {
+                        if let Purpose::Route(ids) = &job.purpose {
+                            frontier.observe(ids, &judgments);
+                            if judgments.iter().any(|judgment| judgment.probability.is_none()) {
+                                errors.push(SearchError { code: "provider_refusal", status: None });
+                            }
+                            continue;
+                        }
                         for judgment in judgments {
                             let index = judgment.name.strip_prefix('w').and_then(|name| name.parse::<usize>().ok()).expect("provider validates batch names");
                             probabilities.insert(index, judgment.probability);
@@ -635,7 +686,7 @@ async fn execute_with_policy(
                             Attempt::Response(Ok(_)) => unreachable!(),
                         };
                         let retry_at = tokio::time::Instant::now().checked_add(delay);
-                        if retryable && !job.retried && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
+                        if matches!(job.purpose, Purpose::Source(_)) && retryable && !job.retried && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
                             job.retried = true;
                             job.ready = retry_at.expect("retry delay checked");
                             queue.push_back(job);
@@ -736,13 +787,13 @@ async fn execute_with_policy(
     } else {
         Operation::Completed
     };
-    if prepared.selected.len() < prepared.windows.len() {
+    if selected.len() < prepared.windows.len() {
         stops.insert("candidate_limit");
     }
     let coverage = SearchCoverage {
         planning_complete: prepared.planning_complete,
         windows_planned: prepared.windows.len(),
-        windows_selected: prepared.selected.len(),
+        windows_selected: selected.len(),
         windows_sent: sent.len(),
         windows_judged: judged,
         windows_refused: refused,

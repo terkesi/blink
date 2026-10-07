@@ -368,8 +368,8 @@ async fn fully_judged_empty_is_one_but_candidate_bounded_empty_is_three() {
     let bounded = run(&fixture(80), &server, Options::default()).await;
     assert_eq!(bounded.exit_code(), 3);
     assert_eq!(bounded.operation, Operation::Completed);
-    assert_eq!(bounded.coverage.windows_judged, 64);
-    assert_eq!(bounded.coverage.windows_unjudged, 16);
+    assert_eq!(bounded.coverage.windows_judged, 56);
+    assert_eq!(bounded.coverage.windows_unjudged, 24);
     assert_eq!(bounded.budgets.attempts, 8);
 }
 
@@ -468,9 +468,10 @@ async fn retry_cannot_escape_attempt_or_byte_reservations() {
 
 #[tokio::test]
 async fn independent_attempt_deadlines_retry_without_waiting_for_other_requests() {
-    let server = Server::new(|request, number| {
+    let delayed = AtomicBool::new(false);
+    let server = Server::new(move |request, _| {
         let mut reply = Reply::scores(request, 0.9);
-        if number == 1 {
+        if !is_route(request) && !delayed.swap(true, Ordering::SeqCst) {
             reply.delay = Duration::from_secs(2);
         }
         reply
@@ -489,7 +490,7 @@ async fn independent_attempt_deadlines_retry_without_waiting_for_other_requests(
         },
     )
     .await;
-    assert_eq!(report.budgets.attempts, 3);
+    assert_eq!(report.budgets.attempts, 4);
     assert_eq!(report.budgets.retries, 1);
     assert_eq!(report.coverage.windows_judged, 16);
 }
@@ -516,7 +517,7 @@ async fn global_deadline_aborts_requests_and_cancellation_returns_130() {
     assert!(report.budgets.stops.contains(&"deadline"));
     assert!(report.budgets.elapsed_ms < 500);
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(server.disconnected.load(Ordering::SeqCst), 2);
+    assert_eq!(server.disconnected.load(Ordering::SeqCst), 3);
     let cancelled = Arc::new(AtomicBool::new(false));
     let toggle = Arc::clone(&cancelled);
     tokio::spawn(async move {
@@ -803,7 +804,7 @@ async fn thorough_policy_judges_more_than_the_default_candidate_quota() {
     let report = run(&fixture(80), &server, Options::thorough()).await;
     assert_eq!(report.exit_code(), 1);
     assert_eq!(report.coverage.windows_judged, 80);
-    assert_eq!(report.budgets.attempts, 10);
+    assert_eq!(report.budgets.attempts, 11);
     assert_eq!(report.budgets.max_attempts, 32);
     assert_eq!(report.budgets.max_encoded_request_bytes, 1024 * 1024);
     assert!(report.coverage.complete);
@@ -838,9 +839,10 @@ async fn metadata_truncation_retains_valid_json_and_reports_omissions() {
 #[tokio::test]
 async fn deadline_retains_exact_source_verified_when_an_early_batch_completes() {
     let root = fixture(16);
-    let server = Server::new(|request, number| {
+    let completed = AtomicBool::new(false);
+    let server = Server::new(move |request, _| {
         let mut reply = Reply::scores(request, 0.9);
-        if number > 1 {
+        if is_route(request) || completed.swap(true, Ordering::SeqCst) {
             reply.delay = Duration::from_secs(10);
         }
         reply
@@ -885,4 +887,333 @@ async fn deadline_retains_exact_source_verified_when_an_early_batch_completes() 
                 .map(|result| result.excerpt.len())
                 .sum::<usize>()
     );
+}
+
+fn is_route(request: &Value) -> bool {
+    request["questions"][0]["name"]
+        .as_str()
+        .unwrap()
+        .starts_with('r')
+}
+
+fn request_source_ids(bodies: &[Vec<u8>]) -> Vec<usize> {
+    bodies
+        .iter()
+        .flat_map(|body| {
+            let request: Value = serde_json::from_slice(body).unwrap();
+            if is_route(&request) {
+                return Vec::new();
+            }
+            request["questions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|question| {
+                    question["name"]
+                        .as_str()
+                        .unwrap()
+                        .strip_prefix('w')
+                        .unwrap()
+                        .parse()
+                        .unwrap()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn delayed_routes_promote_exact_late_source_without_authorizing_results() {
+    for priority in [1.0, 0.4] {
+        let root = fixture(160);
+        let source = Source::open(root.path()).unwrap();
+        let baseline = prepare(&source, "item behavior", &Options::default(), &mut || {
+            Control::Continue
+        });
+        assert!(!baseline.selected.contains(&159));
+        let server = Server::new(move |request, _| {
+            let mut reply = Reply::scores(request, 0.1);
+            if is_route(request) {
+                for answer in reply.body["answers"].as_array_mut().unwrap() {
+                    if answer["name"] == "r159" {
+                        answer["probability"] = json!(priority);
+                    }
+                }
+                reply.delay = Duration::from_millis(200);
+            }
+            reply
+        })
+        .await;
+        let provider = server.provider();
+        let pending = tokio::spawn(execute(
+            source,
+            "item behavior".into(),
+            Options::default(),
+            provider,
+            Arc::new(AtomicBool::new(false)),
+        ));
+        let started = Instant::now();
+        while server.bodies().len() < 4 && started.elapsed() < Duration::from_secs(2) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(request_source_ids(&server.bodies()).len(), 16);
+        let report = pending.await.unwrap();
+        let bodies = server.bodies();
+        let ids = request_source_ids(&bodies);
+        assert!(ids[16..24].contains(&159));
+        assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), ids.len());
+        let mut routes = 0;
+        let mut route_bytes = 0;
+        for body in &bodies {
+            let request: Value = serde_json::from_slice(body).unwrap();
+            let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+            if is_route(&request) {
+                routes += 1;
+                route_bytes += body.len();
+                assert!(body.len() <= 48 * 1024);
+                assert!(request["questions"].as_array().unwrap().len() <= 128);
+            } else {
+                assert!(request["questions"].as_array().unwrap().len() <= 8);
+                for candidate in input["candidates"].as_array().unwrap() {
+                    let index: usize = candidate["name"].as_str().unwrap()[1..].parse().unwrap();
+                    assert_eq!(candidate["text"], format!("fn item_{index}() {{}}\n"));
+                    assert_eq!(candidate["path"], format!("file{index:03}.rs"));
+                }
+            }
+        }
+        assert_eq!(routes, 2);
+        assert!(route_bytes <= 96 * 1024);
+        assert_eq!(report.budgets.attempts, bodies.len());
+        assert_eq!(
+            report.budgets.encoded_request_bytes,
+            bodies.iter().map(Vec::len).sum::<usize>()
+        );
+        assert_eq!(report.coverage.windows_selected, 48);
+        assert_eq!(report.coverage.windows_sent, 48);
+        assert_eq!(report.coverage.windows_judged, 48);
+        assert_eq!(report.coverage.windows_unjudged, 112);
+        assert_eq!(report.raw_judgments.len(), 48);
+        assert!(report.results.is_empty());
+        assert!(!report.coverage.complete);
+    }
+}
+
+#[tokio::test]
+async fn failed_and_refused_routes_fall_back_without_retry_or_source_coverage() {
+    for refusal in [false, true] {
+        let root = fixture(80);
+        let baseline = prepare(
+            &Source::open(root.path()).unwrap(),
+            "item behavior",
+            &Options::default(),
+            &mut || Control::Continue,
+        );
+        let server = Server::new(move |request, _| {
+            if !is_route(request) { return Reply::scores(request, 0.1); }
+            if !refusal { return Reply::status(503); }
+            let answers: Vec<_> = request["questions"].as_array().unwrap().iter().map(|question| json!({"type": "refusal", "name": question["name"], "reason": "test"})).collect();
+            Reply { status: 200, body: json!({"answers": answers}), delay: Duration::ZERO, retry_after: None }
+        }).await;
+        let report = run(&root, &server, Options::default()).await;
+        let bodies = server.bodies();
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|body| is_route(&serde_json::from_slice(body).unwrap()))
+                .count(),
+            1
+        );
+        assert_eq!(report.budgets.retries, 0);
+        assert_eq!(report.coverage.windows_refused, 0);
+        assert_eq!(report.coverage.windows_judged, 56);
+        assert_eq!(
+            request_source_ids(&bodies)
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            baseline.selected[..56].iter().copied().collect()
+        );
+        assert_eq!(report.errors.len(), 1);
+        assert_eq!(report.operation, Operation::Incomplete);
+    }
+}
+
+#[tokio::test]
+async fn source_retry_keeps_body_and_charge_while_routing_uses_same_ledger() {
+    let failed = AtomicBool::new(false);
+    let server = Server::new(move |request, _| {
+        if !is_route(request) && !failed.swap(true, Ordering::SeqCst) {
+            Reply::status(503)
+        } else {
+            Reply::scores(request, 0.1)
+        }
+    })
+    .await;
+    let report = run(&fixture(24), &server, Options::default()).await;
+    let bodies = server.bodies();
+    let sources: Vec<_> = bodies
+        .iter()
+        .filter(|body| !is_route(&serde_json::from_slice(body).unwrap()))
+        .collect();
+    assert_eq!(
+        sources.iter().filter(|body| **body == sources[0]).count(),
+        2
+    );
+    assert_eq!(report.budgets.attempts, 5);
+    assert_eq!(report.budgets.retries, 1);
+    assert_eq!(
+        report.budgets.encoded_request_bytes,
+        bodies.iter().map(Vec::len).sum::<usize>()
+    );
+    assert_eq!(report.coverage.windows_judged, 24);
+    assert_eq!(report.coverage.windows_sent, 24);
+    assert!(report.coverage.complete);
+}
+
+#[test]
+fn route_cards_bound_escaping_long_paths_queries_and_planning_cancellation() {
+    let root = fixture(0);
+    let directory = root.path().join("é\\\"".repeat(30));
+    fs::create_dir(&directory).unwrap();
+    let text = format!("{}\n", "🦀\\\"".repeat(2000));
+    fs::write(directory.join("source.rs"), &text).unwrap();
+    let query = "\\\"".repeat(2048);
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        &query,
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let mut frontier = navigation::Frontier::new(&prepared);
+    let routes = frontier
+        .routes(&prepared, &query, &mut || Control::Continue)
+        .unwrap();
+    assert!(!routes.is_empty());
+    assert!(routes.len() <= 2);
+    for (batch, _) in routes {
+        assert!(batch.encoded_len() <= 48 * 1024);
+    }
+    let mut ids = Vec::new();
+    while let Some(next) = frontier.next(&mut || Control::Continue) {
+        ids.extend(next);
+    }
+    assert_eq!(
+        ids.into_iter().collect::<BTreeSet<_>>(),
+        (0..prepared.window_count()).collect()
+    );
+    let mut frontier = navigation::Frontier::new(&prepared);
+    let mut checks = 0;
+    assert!(
+        frontier
+            .routes(&prepared, &query, &mut || {
+                checks += 1;
+                if checks > 2 {
+                    Control::Cancel
+                } else {
+                    Control::Continue
+                }
+            })
+            .unwrap()
+            .is_empty()
+    );
+    assert!(checks > 2);
+    assert!(frontier.next(&mut || Control::Cancel).is_none());
+}
+
+#[tokio::test]
+async fn no_fit_route_and_source_jobs_allow_a_later_smaller_source_job() {
+    let root = fixture(16);
+    for index in 0..8 {
+        fs::write(
+            root.path().join(format!("file{index:03}.rs")),
+            "\\\"".repeat(1500),
+        )
+        .unwrap();
+    }
+    let source = Source::open(root.path()).unwrap();
+    let prepared = prepare(&source, "query", &Options::default(), &mut || {
+        Control::Continue
+    });
+    let allowance = source_batch(&prepared, "query", &prepared.selected[8..16])
+        .unwrap()
+        .encoded_len();
+    let mut frontier = navigation::Frontier::new(&prepared);
+    let routes = frontier
+        .routes(&prepared, "query", &mut || Control::Continue)
+        .unwrap();
+    assert!(
+        routes
+            .iter()
+            .all(|(batch, _)| batch.encoded_len() > allowance)
+    );
+    let server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+    let report = execute_with_policy(
+        source,
+        "query".into(),
+        Options::default(),
+        server.provider(),
+        Arc::new(AtomicBool::new(false)),
+        Policy {
+            max_attempts: 8,
+            max_bytes: allowance,
+            attempt_timeout: Duration::from_secs(1),
+        },
+    )
+    .await;
+    assert_eq!(report.budgets.attempts, 1);
+    assert_eq!(report.coverage.windows_sent, 8);
+    assert_eq!(report.budgets.encoded_request_bytes, allowance);
+    assert_eq!(
+        request_source_ids(&server.bodies()),
+        prepared.selected[8..16]
+    );
+    assert!(!report.coverage.complete);
+}
+
+#[tokio::test]
+async fn highest_priority_region_finishes_its_later_window_before_lower_regions() {
+    let root = fixture(160);
+    let mut text = "opaque implementation line\n".repeat(119);
+    text.push_str("unique_tail_action();\n");
+    fs::write(root.path().join("zz_region.rs"), &text).unwrap();
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "item behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    assert!(!prepared.selected.contains(&160));
+    assert_eq!(prepared.windows.len(), 162);
+    let server = Server::new(|request, _| {
+        let mut reply = Reply::scores(request, 0.1);
+        if is_route(request) {
+            let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+            let target = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["path"] == "zz_region.rs");
+            if let Some(target) = target {
+                for answer in reply.body["answers"].as_array_mut().unwrap() {
+                    if answer["name"] == target["name"] {
+                        answer["probability"] = json!(0.4);
+                    }
+                }
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    let bodies = server.bodies();
+    let ids = request_source_ids(&bodies);
+    assert!(ids[16..24].contains(&160));
+    assert!(ids[16..24].contains(&161));
+    let tail = report
+        .raw_judgments
+        .iter()
+        .find(|judgment| judgment.name == "w161")
+        .unwrap();
+    assert!(text[tail.start_byte..tail.end_byte].contains("unique_tail_action();"));
+    assert!(!text[..prepared.windows[160].end].contains("unique_tail_action();"));
 }

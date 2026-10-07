@@ -317,3 +317,61 @@ async fn transport_failure_is_safe_and_retryable() {
     assert!(failure.retryable());
     assert!(!format!("{failure:?} {failure}").contains("secret"));
 }
+
+#[test]
+fn route_encoding_shares_validation_and_has_a_separate_bounded_question_cap() {
+    let names: Vec<_> = (0..129).map(|index| format!("r{index}")).collect();
+    let candidates: Vec<_> = names
+        .iter()
+        .map(|name| Candidate {
+            name,
+            path: "source.rs",
+            text: "[excerpt]",
+            start_line: 1,
+            end_line: 120,
+        })
+        .collect();
+    let source = Batch::encode("query", &candidates[..8]).unwrap();
+    let source_body: Value = serde_json::from_slice(&source.body).unwrap();
+    assert!(
+        source_body["questions"][0]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains(INSTRUCTIONS)
+    );
+    assert!(Batch::encode("query", &candidates[..9]).is_err());
+    let route = Batch::encode_routes("query", &candidates[..128]).unwrap();
+    let route_body: Value = serde_json::from_slice(&route.body).unwrap();
+    assert_eq!(route_body["questions"].as_array().unwrap().len(), 128);
+    for question in route_body["questions"].as_array().unwrap() {
+        assert!(serde_json::to_vec(question).unwrap().len() <= 220);
+        assert!(
+            !question["instructions"]
+                .as_str()
+                .unwrap()
+                .contains(INSTRUCTIONS)
+        );
+    }
+    assert!(Batch::encode_routes("query", &candidates).is_err());
+    let escaped = Candidate {
+        name: "r0",
+        path: "é\\\".rs",
+        text: "\n\\\"🦀",
+        start_line: 1,
+        end_line: 2,
+    };
+    let route = Batch::encode_routes("query", &[escaped]).unwrap();
+    let body: Value = serde_json::from_slice(&route.body).unwrap();
+    let input: Value = serde_json::from_str(body["input"].as_str().unwrap()).unwrap();
+    let card = serde_json::to_string(&input["candidates"][0]).unwrap();
+    assert_eq!(
+        Batch::route_card_len(&Candidate {
+            name: "r0",
+            path: "é\\\".rs",
+            text: "\n\\\"🦀",
+            start_line: 1,
+            end_line: 2
+        }),
+        serde_json::to_string(&card).unwrap().len() - 2
+    );
+}
