@@ -1,19 +1,24 @@
-use crate::source::{Control, Coverage, Limits, Source};
+use crate::{
+    provider::Provider,
+    search::{self, Options},
+    source::{Control, Coverage, Limits, Source},
+};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use std::{
     io::{self, Write},
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
-#[command(
-    name = "blink",
-    about = "Inspect eligible working-tree source",
-    version
-)]
+#[command(name = "blink", about = "Find source by behavior", version)]
 pub struct Cli {
     #[arg(long, global = true, help = "Write versioned JSON to stdout")]
     pub json: bool,
@@ -27,6 +32,18 @@ pub enum Command {
     Files {
         #[arg(default_value = ".")]
         root: PathBuf,
+    },
+    /// Find source that implements behavior described by a query.
+    Search {
+        query: String,
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        thorough: bool,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long, value_parser = timeout_seconds, help = "Whole-operation timeout in seconds, up to 300")]
+        timeout: Option<Duration>,
     },
     /// Inspect local configuration without contacting a provider.
     Doctor,
@@ -48,7 +65,7 @@ struct Inventory<'a> {
     coverage: &'a Coverage,
 }
 
-pub fn run(cli: Cli, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<u8> {
+pub async fn run(cli: Cli, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<u8> {
     match cli.command {
         Command::Files { root } => {
             let source = match Source::open(&root) {
@@ -116,6 +133,93 @@ pub fn run(cli: Cli, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<u8>
             }
             Ok(if coverage.complete { 0 } else { 3 })
         }
+        Command::Search {
+            query,
+            root,
+            thorough,
+            limit,
+            timeout,
+        } => {
+            let mut options = if thorough {
+                Options::thorough()
+            } else {
+                Options::default()
+            };
+            options.limit = limit;
+            if let Some(timeout) = timeout {
+                options.timeout = timeout;
+            }
+            if let Err(message) = options.validate(&query) {
+                return configuration_error(cli.json, out, err, "invalid_search", message);
+            }
+            let key = match std::env::var("OPENAI_API_KEY") {
+                Ok(key) if !key.trim().is_empty() => key,
+                _ => {
+                    return configuration_error(
+                        cli.json,
+                        out,
+                        err,
+                        "missing_api_key",
+                        "OPENAI_API_KEY is required for search",
+                    );
+                }
+            };
+            let provider = match Provider::new(&key) {
+                Ok(provider) => provider,
+                Err(_) => {
+                    return configuration_error(
+                        cli.json,
+                        out,
+                        err,
+                        "invalid_api_key",
+                        "OPENAI_API_KEY is invalid",
+                    );
+                }
+            };
+            let source = match Source::open(root) {
+                Ok(source) => source,
+                Err(_) => {
+                    return configuration_error(
+                        cli.json,
+                        out,
+                        err,
+                        "root_open",
+                        "cannot open search root",
+                    );
+                }
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let signal_cancelled = Arc::clone(&cancelled);
+            let signal = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    signal_cancelled.store(true, Ordering::Relaxed);
+                }
+            });
+            let mut report = search::execute(source, query, options, provider, cancelled).await;
+            signal.abort();
+            let bytes = if cli.json {
+                report.encode_json()?
+            } else {
+                report.encode_text()
+            };
+            out.write_all(&bytes)?;
+            writeln!(
+                err,
+                "blink: {:?}, {} of {} windows judged, {} requests, {} request bytes, {} results omitted{}",
+                report.operation,
+                report.coverage.windows_judged,
+                report.coverage.windows_planned,
+                report.budgets.attempts,
+                report.budgets.encoded_request_bytes,
+                report.omitted_results,
+                if report.output_truncated {
+                    ", output truncated"
+                } else {
+                    ""
+                }
+            )?;
+            Ok(report.exit_code())
+        }
         Command::Doctor => {
             let present = std::env::var_os("OPENAI_API_KEY").is_some_and(|value| !value.is_empty());
             if cli.json {
@@ -151,4 +255,33 @@ pub fn run(cli: Cli, out: &mut dyn Write, err: &mut dyn Write) -> io::Result<u8>
 fn json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value)?;
     writeln!(out)
+}
+
+fn timeout_seconds(value: &str) -> Result<Duration, String> {
+    let seconds: f64 = value
+        .parse()
+        .map_err(|_| "timeout must be a number of seconds")?;
+    let duration =
+        Duration::try_from_secs_f64(seconds).map_err(|_| "timeout must be finite and positive")?;
+    if duration.is_zero() || duration > Duration::from_secs(300) {
+        return Err("timeout must be greater than zero and at most 300 seconds".into());
+    }
+    Ok(duration)
+}
+
+fn configuration_error(
+    json_mode: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    code: &str,
+    message: &str,
+) -> io::Result<u8> {
+    if json_mode {
+        json(
+            out,
+            &serde_json::json!({"schema_version": SCHEMA_VERSION, "command": "search", "error": {"code": code}}),
+        )?;
+    }
+    writeln!(err, "blink: {message}")?;
+    Ok(2)
 }

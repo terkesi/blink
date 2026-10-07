@@ -447,3 +447,21 @@ fn recheck_after_entry_limit_retains_later_hard_stops() {
     assert_eq!(result.coverage().bytes_read, 4);
     assert!(!result.coverage().complete);
 }
+
+#[test]
+fn ancestor_ignore_errors_never_include_absolute_local_paths() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir(root.path().join(".git")).unwrap();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(root.path().join(".gitignore"), [255]).unwrap();
+    let source = Source::open(root.path().join("nested")).unwrap();
+    let snapshot = source.snapshot(Limits::default(), &mut || Control::Continue);
+    assert!(!snapshot.coverage().complete);
+    assert!(!snapshot.coverage().issues.is_empty());
+    for issue in &snapshot.coverage().issues {
+        assert!(!std::path::Path::new(&issue.path).is_absolute());
+        assert_eq!(issue.path, "<ancestor>");
+    }
+    let encoded = serde_json::to_string(snapshot.coverage()).unwrap();
+    assert!(!encoded.contains(root.path().to_str().unwrap()));
+}

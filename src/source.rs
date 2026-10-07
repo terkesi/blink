@@ -136,6 +136,9 @@ pub struct Snapshot {
     coverage: Coverage,
 }
 impl Snapshot {
+    pub fn into_coverage(self) -> Coverage {
+        self.coverage
+    }
     pub fn files(&self) -> &[SourceFile] {
         &self.files
     }
@@ -258,8 +261,17 @@ impl Scan<'_> {
         *self.coverage.excluded.entry(reason).or_default() += 1;
     }
     fn issue(&mut self, path: &Path, operation: &'static str, kind: impl ToString) {
+        let path = if path.is_absolute() {
+            match path.strip_prefix(&self.source.root_path) {
+                Ok(relative) if relative.as_os_str().is_empty() => ".".into(),
+                Ok(relative) => relative.to_string_lossy().into_owned(),
+                Err(_) => "<ancestor>".into(),
+            }
+        } else {
+            path.to_string_lossy().into_owned()
+        };
         self.coverage.issues.push(Issue {
-            path: path.to_string_lossy().into_owned(),
+            path,
             operation,
             kind: kind.to_string(),
         });

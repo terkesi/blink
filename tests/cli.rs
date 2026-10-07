@@ -115,3 +115,98 @@ fn terminal_paths_escape_control_characters() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "\"a\\nb.rs\"\n");
     assert!(!output.stderr.is_empty());
 }
+
+#[test]
+fn search_requires_configuration_before_reading_source() {
+    let output = run(&[
+        "search",
+        "where does checkout happen",
+        "/missing-root",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(value(&output)["error"]["code"], "missing_api_key");
+    assert!(!output.stderr.is_empty());
+}
+
+#[test]
+fn search_validates_query_limits_and_finite_positive_timeouts() {
+    for args in [
+        vec!["search", "", "--json"],
+        vec!["search", "   ", "--json"],
+        vec!["search", "query", "--limit", "0", "--json"],
+        vec!["search", "query", "--limit", "101", "--json"],
+        vec!["search", "query", "--timeout", "0", "--json"],
+        vec!["search", "query", "--timeout", "NaN", "--json"],
+        vec!["search", "query", "--timeout", "inf", "--json"],
+        vec!["search", "query", "--timeout", "301", "--json"],
+        vec!["search", "query", "--timeout", "0.000000000001", "--json"],
+    ] {
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert_eq!(value(&output)["schema_version"], 1, "{args:?}");
+        assert!(!output.stderr.is_empty());
+    }
+    let long = "x".repeat(4097);
+    assert_eq!(run(&["search", &long, "--json"]).status.code(), Some(2));
+}
+
+#[test]
+fn search_empty_scope_exercises_cli_without_contacting_provider() {
+    let root = TempDir::new().unwrap();
+    for flags in [vec!["--json"], vec!["--thorough", "--json"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_blink"))
+            .args(["search", "query", root.path().to_str().unwrap()])
+            .args(flags)
+            .env("OPENAI_API_KEY", "synthetic-secret-never-print")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let report = value(&output);
+        assert_eq!(report["coverage"]["complete"], true);
+        assert_eq!(report["budgets"]["attempts"], 0);
+        assert!(report["results"].as_array().unwrap().is_empty());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-secret"));
+    }
+}
+
+#[test]
+fn search_deadline_includes_discovery_and_json_stays_valid() {
+    let root = TempDir::new().unwrap();
+    for index in 0..100 {
+        fs::write(
+            root.path().join(format!("source{index}.rs")),
+            "fn sample() {}\n",
+        )
+        .unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_blink"))
+        .args([
+            "search",
+            "query",
+            root.path().to_str().unwrap(),
+            "--timeout",
+            "0.000000001",
+            "--json",
+        ])
+        .env("OPENAI_API_KEY", "synthetic-key")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(value(&output)["coverage"]["complete"], false);
+    assert_eq!(value(&output)["budgets"]["attempts"], 0);
+    assert_eq!(value(&output)["operation"], "incomplete");
+}
+
+#[test]
+fn malformed_credentials_are_never_echoed() {
+    let output = Command::new(env!("CARGO_BIN_EXE_blink"))
+        .args(["search", "query", "--json"])
+        .env("OPENAI_API_KEY", "synthetic-secret\ninvalid")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(value(&output)["error"]["code"], "invalid_api_key");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("synthetic-secret"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-secret"));
+}

@@ -1,20 +1,48 @@
 # Blink
 
-Blink inventories eligible source files in your current working tree. This stage provides `files`, `doctor`, and `version`. It does not perform semantic search.
+Blink finds source code from natural-language questions. It reads eligible files, asks the OpenAI Decisions API which excerpts are relevant, and returns exact source with paths, line numbers, and hashes.
+
+Blink has no index or background process. Each search reads the current working tree. Results describe individual file versions, not an atomic repository snapshot.
 
 ## Run the CLI
 
 Install Rust 1.93.0 through rustup. The repository pins that toolchain and commits `Cargo.lock`. The supported development platforms are macOS and Linux.
 
 ```sh
-cargo build --locked
-./target/debug/blink files .
-./target/debug/blink files . --json
-./target/debug/blink doctor --json
-./target/debug/blink version --json
+cargo build --locked --release
+./target/release/blink files src --json
+./target/release/blink doctor --json
+./target/release/blink search "where are failed requests retried" src --json
 ```
 
 `files` defaults to the current directory. Terminal output contains one JSON-quoted relative path per line. Quoting makes embedded control characters visible. Coverage summaries go to stderr. `--json` works before or after each subcommand and writes one JSON object to stdout. Diagnostics stay on stderr.
+
+Set `OPENAI_API_KEY` in the environment before searching. Blink uses `https://api.openai.com/v1/decisions` with `gpt-6-luna`. Your project needs access to that model. `doctor` checks key presence locally; it does not test access. See the [Decisions API guide](https://developers.openai.com/api/docs/guides/decisions).
+
+Search sends the query, relative paths, and selected source excerpts to OpenAI. Choose the smallest useful root and inspect `blink files ROOT` first. Filename exclusions do not detect every secret embedded in otherwise eligible source.
+
+## Search behavior
+
+Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Half of each candidate batch explores files in deterministic order. The other half uses query terms and paths to rank candidates. Each request asks up to eight independent relevance questions.
+
+Accepted overlapping windows merge into source excerpts. On the first positive judgment for a file, Blink rereads it through the pinned root and compares its hash. That check lets already-validated results survive a later request timeout. Changed or unreadable files are omitted and the operation is incomplete. A later write can still occur after the check.
+
+| Limit | Default | `--thorough` |
+| --- | --- | --- |
+| Search deadline | 15 seconds | 60 seconds |
+| HTTP attempts, including retries | 8 | 32 |
+| Total encoded request bodies | 256 KiB | 1 MiB |
+| Concurrent HTTP requests | 4 | 4 |
+| Returned records | 8 | 8 |
+| Encoded stdout | 32 KiB | 32 KiB |
+
+`--limit` accepts 1 through 100 records. `--timeout` overrides the deadline with a positive number of seconds, up to 300. Each batch can retry once after a transient failure, within the same attempt, byte, and time limits. Redirects and automatic HTTP-client retries are disabled. Cancellation drops local requests; it cannot recall work already received by the provider.
+
+JSON schema version 1 includes `results`, `operation`, `coverage`, `budgets`, `errors`, and `output_truncated`. Each result has a relative `path`, the whole-file `sha256`, zero-based byte offsets `start_byte` and exclusive `end_byte`, inclusive one-based line numbers, `probability`, and the exact `excerpt`. Terminal output escapes control characters. JSON preserves the source bytes as decoded UTF-8 text.
+
+`coverage.complete` requires full enumeration, complete planning, and a valid judgment for every eligible window. A bounded search can return useful results with incomplete coverage. Check coverage separately from `operation`. Refusals count as unjudged. Output limits keep whole records and report omissions.
+
+The relevance threshold is currently 0.5. It has not passed live calibration or held-out quality gates. Offline tests establish source, transport, and execution behavior; they do not establish retrieval accuracy.
 
 ## Inventory policy
 
@@ -41,15 +69,23 @@ Default ceilings are 1 MiB per file, 64 MiB of reads per run, and 100,000 visite
 
 JSON schema version 1 includes `files` with `path`, `bytes`, and `sha256`. `coverage` reports visited entries, included files and bytes, actual bytes read, exclusion counts, issues, `stops`, and `complete`. Exclusion counts describe encountered entries. A pruned directory counts once. Its unvisited descendants are not counted. The entry limit can conservatively report incomplete coverage when the last allowed entry was the directory's final entry.
 
-Unreadable entries and unreadable or invalid ignore rules make coverage incomplete. The affected ignore-rule subtree is excluded. File paths are relative to the selected root. Ignore diagnostics may name an absolute ancestor rule path. Paths that are not valid UTF-8 are excluded.
+Unreadable entries and unreadable or invalid ignore rules make coverage incomplete. The affected ignore-rule subtree is excluded. File paths are relative to the selected root. Diagnostics outside the selected root use `<ancestor>` instead of an absolute path. Paths that are not valid UTF-8 are excluded.
 
 Returned files are sorted by relative path. Enumeration stops at its bounds before sorting. An incomplete inventory can contain a filesystem-order subset. Each included file owns its captured bytes, digest, and byte offsets of line starts. A trailing newline adds an empty final line. This is a per-file snapshot, not an atomic repository snapshot. Concurrent writes can change files during a run.
 
-Exit status 0 means the command completed. A downstream reader closing the output pipe also ends the command successfully. Status 2 means an invocation or root-open failure. Status 3 means incomplete inventory or another output failure. Status 1 is reserved. Built-in help and `--version` use Clap's text format.
+| Status | Meaning |
+| --- | --- |
+| 0 | Results returned with completed execution under the selected policy, or another command completed. |
+| 1 | Search found no matches after judging the entire eligible scope. |
+| 2 | Invalid invocation or configuration before execution. |
+| 3 | Failed or incomplete execution, including an empty search with unjudged source. |
+| 130 | Search interrupted by the user. |
+
+A downstream reader closing the output pipe ends the command successfully. Other output failures use status 3. Built-in help and `--version` use Clap's text format.
 
 ## Local doctor
 
-`doctor` checks only whether `OPENAI_API_KEY` is present and nonempty. It never prints the value or contacts a provider. Presence does not prove authentication or model access. None of the current commands needs a key.
+`doctor` checks only whether `OPENAI_API_KEY` is present and nonempty. It never prints the value or contacts a provider. Presence does not prove authentication or model access. `files`, `doctor`, and `version` do not need a key.
 
 ## Source API
 

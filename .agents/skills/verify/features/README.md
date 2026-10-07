@@ -3,6 +3,7 @@
 ## Sub-features
 
 - [Source inventory](inventory.md) covers files, policy, hashes, coverage, and errors.
+- [Source search](search.md) covers exact excerpts, provider requests, budgets, and incomplete results.
 - [Local doctor](doctor.md) covers key presence and local readiness.
 - [Version](version.md) covers the compiled package version.
 
@@ -16,4 +17,4 @@ Run `scripts/verify --output /tmp/blink-proof` from the repository root. The hel
 
 ## Gotchas
 
-The output directory must be empty or absent. Source fixtures are temporary. Command evidence survives cleanup. These commands do not perform semantic search.
+The output directory must be empty or absent. Source fixtures are temporary. Command evidence survives cleanup. Offline search tests use a local server and do not measure model relevance.

@@ -142,6 +142,20 @@ def main():
         (invalid / ".gitignore").write_bytes(bytes([255]))
         incomplete = json.loads(run("incomplete-policy", [binary, "files", str(invalid), "--json"], expected=3).stdout)
         assert incomplete["coverage"]["complete"] is False
+        missing_key = json.loads(run("search-missing-key", [binary, "search", "where is a value returned", str(root), "--json"], expected=2).stdout)
+        assert missing_key["error"]["code"] == "missing_api_key"
+        empty = fixture / "empty"
+        empty.mkdir()
+        empty_search = json.loads(run("search-empty", [binary, "search", "where is a value returned", str(empty), "--json"], expected=1, env=synthetic_env).stdout)
+        assert empty_search["results"] == []
+        assert empty_search["coverage"]["complete"] is True
+        assert empty_search["budgets"]["attempts"] == 0
+        run("search-empty-terminal", [binary, "search", "where is a value returned", str(empty)], expected=1, env=synthetic_env)
+        run("search-empty-query", [binary, "search", " ", str(root), "--json"], expected=2, env=synthetic_env)
+        run("search-invalid-limit", [binary, "search", "value", str(root), "--limit", "0", "--json"], expected=2, env=synthetic_env)
+        run("search-invalid-timeout", [binary, "search", "value", str(root), "--timeout", "NaN", "--json"], expected=2, env=synthetic_env)
+        run("search-missing-root", [binary, "search", "value", str(fixture / "absent"), "--json"], expected=2, env=synthetic_env)
+        run("search-loopback-tests", ["cargo", "test", "--locked", "search::tests", "--", "--nocapture"])
         after = fingerprint(root)
         save("source-after.json", after)
         assert after == before, "source changed during read-only commands"
@@ -149,6 +163,7 @@ def main():
             captured = (output / (record["name"] + ".stdout")).read_bytes() + (output / (record["name"] + ".stderr")).read_bytes()
             assert b"synthetic-file-secret" not in captured
             assert b"outside-root-source" not in captured
+            assert synthetic_env["OPENAI_API_KEY"].encode() not in captured
         success = True
     finally:
         fixture_path = str(fixture) if fixture else None
