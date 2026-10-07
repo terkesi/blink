@@ -236,6 +236,64 @@ fn exploration_reaches_other_files_and_planning_obeys_control() {
     assert_eq!(cancelled.window_count(), 0);
 }
 
+#[test]
+fn exploration_reaches_distinct_directories_within_the_candidate_cap() {
+    let root = fixture(0);
+    for directory in ["a", "b/nested", "c"] {
+        fs::create_dir_all(root.path().join(directory)).unwrap();
+    }
+    for index in 0..300 {
+        fs::write(
+            root.path().join(format!("a/file{index:03}.rs")),
+            "fn item() {}\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        root.path().join("a/file000.rs"),
+        "relevant query\n".repeat(10_000),
+    )
+    .unwrap();
+    for path in ["root.rs", "b/nested/source.rs", "c/source.rs"] {
+        fs::write(root.path().join(path), "fn item() {}\n").unwrap();
+    }
+    let source = Source::open(root.path()).unwrap();
+    for (options, cap) in [(Options::default(), 64), (Options::thorough(), 256)] {
+        let a = prepare(&source, "relevant query", &options, &mut || {
+            Control::Continue
+        });
+        let b = prepare(&source, "relevant query", &options, &mut || {
+            Control::Continue
+        });
+        assert_eq!(a.selected, b.selected);
+        assert_eq!(a.candidate_count(), cap);
+        assert_eq!(a.selected.iter().collect::<BTreeSet<_>>().len(), cap);
+        let parents: BTreeSet<_> = a
+            .selected
+            .iter()
+            .step_by(2)
+            .take(4)
+            .map(|&index| {
+                std::path::Path::new(a.snapshot.files()[a.windows[index].file].path())
+                    .parent()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            parents,
+            ["", "a", "b/nested", "c"]
+                .into_iter()
+                .map(std::path::Path::new)
+                .collect()
+        );
+        assert!(
+            a.selected.iter().skip(1).step_by(2).all(|&index| {
+                a.snapshot.files()[a.windows[index].file].path() == "a/file000.rs"
+            })
+        );
+    }
+}
+
 #[tokio::test]
 async fn real_search_honors_ignores_relative_payloads_exact_ranges_and_answer_names() {
     let root = fixture(0);

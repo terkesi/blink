@@ -120,7 +120,7 @@ pub fn prepare(
     let snapshot = source.snapshot(Limits::default(), control);
     let terms = terms(query);
     let mut windows = Vec::new();
-    let mut by_file = Vec::new();
+    let mut by_directory = BTreeMap::new();
     let mut planning_complete = true;
     'files: for (file_index, file) in snapshot.files().iter().enumerate() {
         let mut start = 0;
@@ -170,7 +170,28 @@ pub fn prepare(
                 end
             };
         }
-        by_file.push((first, windows.len()));
+        let parent = file
+            .path()
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent);
+        by_directory
+            .entry(parent)
+            .or_insert_with(VecDeque::new)
+            .push_back((first, windows.len()));
+    }
+    let mut directories: VecDeque<_> = by_directory.into_values().collect();
+    let mut by_file = Vec::new();
+    while let Some(mut files) = directories.pop_front() {
+        if control() != Control::Continue {
+            planning_complete = false;
+            break;
+        }
+        if let Some(range) = files.pop_front() {
+            by_file.push(range);
+        }
+        if !files.is_empty() {
+            directories.push_back(files);
+        }
     }
     let slots = options.policy().max_attempts * BATCH_SIZE;
     let selected = select(&windows, &by_file, slots, control, &mut planning_complete);
