@@ -197,6 +197,9 @@ pub fn prepare(
         }
     }
     let slots = options.policy().max_attempts * BATCH_SIZE;
+    if windows.len() <= slots {
+        by_file.sort_unstable_by_key(|&(first, _)| first);
+    }
     let selected = select(&windows, &by_file, slots, control, &mut planning_complete);
     Prepared {
         snapshot,

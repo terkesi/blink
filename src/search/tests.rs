@@ -237,6 +237,37 @@ fn exploration_reaches_other_files_and_planning_obeys_control() {
 }
 
 #[test]
+fn exploration_preserves_file_order_when_all_windows_fit() {
+    let root = fixture(0);
+    for directory in ["a", "b"] {
+        fs::create_dir_all(root.path().join(directory)).unwrap();
+    }
+    for (path, text) in [
+        ("a/first.rs", "fn first() {}\n"),
+        ("a/second.rs", "fn second() {}\n"),
+        ("b/first.rs", "fn first() {}\n"),
+        ("b/second.rs", "relevant query\n"),
+    ] {
+        fs::write(root.path().join(path), text).unwrap();
+    }
+    let source = Source::open(root.path()).unwrap();
+    for options in [Options::default(), Options::thorough()] {
+        let prepared = prepare(&source, "relevant query", &options, &mut || {
+            Control::Continue
+        });
+        let paths: Vec<_> = prepared
+            .selected
+            .iter()
+            .map(|&index| prepared.snapshot.files()[prepared.windows[index].file].path())
+            .collect();
+        assert_eq!(
+            paths,
+            ["a/first.rs", "b/second.rs", "a/second.rs", "b/first.rs"]
+        );
+    }
+}
+
+#[test]
 fn exploration_reaches_distinct_directories_within_the_candidate_cap() {
     let root = fixture(0);
     for directory in ["a", "b/nested", "c"] {
