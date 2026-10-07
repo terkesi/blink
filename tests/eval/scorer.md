@@ -16,6 +16,7 @@ The JSON run has these fields:
   "split": "heldout",
   "mode": "default",
   "threshold": 0.65,
+  "result_selection": "directory-rounds-v1",
   "frozen_threshold_sha256": null,
   "provenance": {
     "kind": "offline-oracle",
@@ -110,8 +111,11 @@ scripts/score-eval --corpus /tmp/blink-eval/corpus.json --run heldout.json --fro
 ```
 
 The grid recomputes threshold selection from calibration raw scores only, merges overlapping or adjacent accepted windows, and caps records at eight.
-Equal-score ties sort by path and starting line. The grid does not simulate provider decisions or omitted candidates.
-Its output retains a canonical raw-run SHA-256 and provenance.
+Replay and freezing require an explicit `result_selection` policy in the run. Missing or unknown policies fail; ordinary scoring of historical actual outputs still works without that field.
+Replay must reproduce the actual ordered result paths and byte intervals at the run's original threshold before any requested grid or frozen artifact is returned. A mismatch fails even if the requested thresholds omit the original threshold.
+`probability-v1` sorts by descending probability, then path and starting byte. `directory-rounds-v1` starts with that order and, only when more than eight records remain, prioritizes the best record per parent directory before second records from those directories. Probability order is preserved within each round. Root-level files share one parent.
+New evaluation runs record `directory-rounds-v1` and reject frozen artifacts with a different or missing policy. Existing receipts must not be silently assigned a policy.
+The grid does not simulate provider decisions or omitted candidates. Its output retains the declared policy, a canonical raw-run SHA-256, and provenance.
 The frozen artifact also records the calibration source and label fingerprint and the freeze time.
 No artifact can freeze an incomplete calibration run.
 Changing a threshold after reading held-out outcomes requires a new final holdout.

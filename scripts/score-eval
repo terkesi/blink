@@ -228,15 +228,32 @@ def score(corpus, sources, run, frozen=None):
             limitation="Offline oracle scores validate the scorer only. Multifile completion and attack exposure require separate assessment."))
 
 
+def select_results(judgments, policy):
+    selected = sorted(judgments, key=lambda j: (-j['score'], j['path'], j['start_byte']))
+    if policy == 'directory-rounds-v1' and len(selected) > 8:
+        occurrences = defaultdict(int)
+        rounds = []
+        for judgment in selected:
+            parent = judgment['path'].rpartition('/')[0]
+            rounds.append((occurrences[parent], judgment))
+            occurrences[parent] += 1
+        selected = [judgment for _, judgment in sorted(rounds, key=lambda item: item[0])]
+    return selected[:8]
+
+
 def calibration_grid(corpus, sources, run, thresholds):
     require(run.get('split') == 'calibration', "calibration cannot use heldout")
+    policy = run.get('result_selection')
+    require(policy in ('probability-v1', 'directory-rounds-v1'),
+            'calibration requires a known result_selection policy: probability-v1 or directory-rounds-v1')
     # Validate original receipts before deriving counterfactual threshold selections.
     score(corpus, sources, run)
     require(all(c['status'] == 'ok' and not c['output_truncated'] and not c['changed_files'] for c in run['cases']),
             'cannot calibrate incomplete receipts')
     questions = {q['id']: q for q in corpus['questions']}
+    original_cases = {case['id']: case for case in run['cases']}
     output = []
-    for threshold in thresholds:
+    for index, threshold in enumerate([run['threshold'], *thresholds]):
         derived = json.loads(json.dumps(run))
         derived['threshold'] = threshold
         for case in derived['cases']:
@@ -252,19 +269,28 @@ def calibration_grid(corpus, sources, run, thresholds):
                     merged[-1]['score'] = max(merged[-1]['score'], judgment['score'])
                 else:
                     merged.append(dict(judgment))
-            for judgment in sorted(merged, key=lambda j: (-j['score'], j['path'], j['start_byte']))[:8]:
+            for judgment in select_results(merged, policy):
                 snippet, raw = excerpt(sources, questions[case['id']]['repository'], judgment)
                 case['results'].append(dict(path=judgment['path'], start_line=judgment['start_line'], end_line=judgment['end_line'],
                     start_byte=judgment['start_byte'], end_byte=judgment['end_byte'],
                     snippet=snippet, sha256=sha(snippet.encode()), file_sha256=sha(raw)))
             case['returned_count'] = len(case['results'])
-        output.append(dict(threshold=threshold, metrics=score(corpus, sources, derived)['metrics']))
-    return dict(raw_run_sha256=sha(canonical(run)), provenance=run['provenance'], mode=run['mode'], grid=output)
+            if index == 0:
+                repository = questions[case['id']]['repository']
+                expected = [location(byte_range(sources, repository, result)[0])
+                            for result in original_cases[case['id']]['results']]
+                require([location(result) for result in case['results']] == expected,
+                        'calibration replay differs from actual ordered results for ' + case['id'])
+        if index > 0:
+            output.append(dict(threshold=threshold, metrics=score(corpus, sources, derived)['metrics']))
+    return dict(raw_run_sha256=sha(canonical(run)), provenance=run['provenance'], mode=run['mode'],
+                result_selection=policy, grid=output)
 
 
 def freeze(corpus, sources, run, threshold):
     calibration_grid(corpus, sources, run, [threshold])
     return dict(schema_version=1, split='calibration', mode=run['mode'], threshold=threshold,
+        result_selection=run['result_selection'],
         frozen_at=datetime.now(timezone.utc).isoformat(),
         provider=run['provenance']['provider'], model=run['provenance']['model'],
         code_revision=run['provenance']['code_revision'], provenance=run['provenance'],

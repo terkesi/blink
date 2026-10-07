@@ -9,6 +9,8 @@ import runpy
 import subprocess
 import sys
 
+RESULT_SELECTION = "directory-rounds-v1"
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -39,6 +41,8 @@ def main():
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=repo):
         parser.error("commit the evaluated code first so receipts identify its exact revision")
     if frozen:
+        if frozen.get("result_selection") != RESULT_SELECTION:
+            parser.error("frozen calibration result_selection policy differs from this run")
         if frozen["mode"] != args.mode or frozen["provenance"]["code_revision"] != revision:
             parser.error("frozen calibration mode or revision differs from this run")
         if frozen["calibration_fingerprint"] != scorer["fingerprint"](corpus, sources, "calibration"):
@@ -53,6 +57,7 @@ def main():
     repositories = {repository["id"]: repository for repository in corpus["repositories"]}
     run = {
         "schema_version": 1, "split": args.split, "mode": args.mode, "threshold": threshold,
+        "result_selection": RESULT_SELECTION,
         "frozen_threshold_sha256": scorer["sha"](scorer["canonical"](frozen)) if frozen else None,
         "provenance": {"kind": "live", "provider": "openai", "model": "gpt-6-luna", "code_revision": revision, "captured_at": datetime.now(timezone.utc).isoformat()},
         "cases": [],

@@ -20,6 +20,7 @@ ScoreError = SCORER['ScoreError']
 def oracle(corpus, sources, split='heldout'):
     """Gold labels construct receipts to exercise scoring, never retrieval."""
     run = dict(schema_version=1, split=split, mode='default', threshold=0.65, frozen_threshold_sha256=None,
+        result_selection='probability-v1',
         provenance=dict(kind='offline-oracle', provider='none', model='none', code_revision='offline-test',
                         captured_at='2026-10-07T12:00:00Z'), cases=[])
     repos = {r['id']: r for r in corpus['repositories']}
@@ -33,6 +34,7 @@ def oracle(corpus, sources, split='heldout'):
             judgments.append(dict(path=gold['path'], start_line=gold['start_line'], end_line=gold['end_line'], score=1))
         if 'attack_span' in question:
             judgments.append(dict(question['attack_span'], score=0))
+        results.sort(key=lambda result: (result['path'], result['start_line']))
         count = len(repos[question['repository']]['source_files'])
         run['cases'].append(dict(id=question['id'], status='ok', available_candidates=count,
             discovered_candidates=count, judgments=judgments, results=results,
@@ -111,6 +113,70 @@ class ScoringTests(unittest.TestCase):
         original = score(self.corpus, self.sources, run)['metrics']
         replay = SCORER['calibration_grid'](self.corpus, self.sources, run, [run['threshold']])
         self.assertEqual(replay['grid'][0]['metrics']['hit_at_8'], original['hit_at_8'])
+
+    def test_grid_replays_declared_directory_policy_for_a_lower_scoring_helper(self):
+        paths = [f'a/file{i:02}.py' for i in range(10)] + ['b/helper.py']
+        raw = b'def step(): return 1\n'
+        sources = {('steps', path): raw for path in paths}
+        gold = [dict(path=path, start_line=1, end_line=1, snippet=raw.decode(), sha256=sha(raw))
+                for path in (paths[0], paths[-1])]
+        corpus = dict(schema_version=1,
+            repositories=[dict(id='steps', split='calibration', source_files=paths)],
+            questions=[dict(id='steps-01', repository='steps', split='calibration',
+                            tags=['ordinary_behavior'], expected_spans=gold)])
+        run = oracle(corpus, sources, 'calibration')
+        run['cases'][0]['judgments'] = [dict(path=path, start_line=1, end_line=1,
+            score=0.98 if path == paths[-1] else 1.0) for path in paths]
+        directory_paths = [paths[0], paths[-1], *paths[1:7]]
+        for policy, selected_paths, complete in [('probability-v1', paths[:8], 0),
+                ('directory-rounds-v1', directory_paths, 1)]:
+            with self.subTest(policy=policy):
+                run['result_selection'] = policy
+                run['cases'][0]['results'] = [dict(path=path, start_line=1, end_line=1,
+                    snippet=raw.decode(), sha256=sha(raw), file_sha256=sha(raw)) for path in selected_paths]
+                run['cases'][0]['returned_count'] = 8
+                actual = score(corpus, sources, run)['metrics']['all_required']
+                grid = SCORER['calibration_grid'](corpus, sources, run, [run['threshold']])
+                self.assertEqual(grid['result_selection'], policy)
+                self.assertEqual(grid['grid'][0]['metrics']['all_required']['numerator'], complete)
+                frozen = SCORER['freeze'](corpus, sources, run, run['threshold'])
+                self.assertEqual(frozen['result_selection'], policy)
+                self.assertEqual(grid['grid'][0]['metrics']['all_required'], actual)
+        run['result_selection'] = 'probability-v1'
+        with self.assertRaisesRegex(ScoreError, 'replay differs from actual ordered results'):
+            SCORER['calibration_grid'](corpus, sources, run, [1.0])
+        with self.assertRaisesRegex(ScoreError, 'replay differs from actual ordered results'):
+            SCORER['freeze'](corpus, sources, run, 1.0)
+        run['result_selection'] = 'directory-rounds-v1'
+        run['cases'][0]['results'].reverse()
+        with self.assertRaisesRegex(ScoreError, 'replay differs from actual ordered results'):
+            SCORER['calibration_grid'](corpus, sources, run, [1.0])
+
+    def test_directory_replay_preserves_probability_order_when_all_results_fit(self):
+        records = [dict(path=path, score=probability, start_byte=start) for path, probability, start in (
+            ('root.py', 0.8, 0), ('a/first.py', 1.0, 20),
+            ('b/helper.py', 0.98, 0), ('a/first.py', 1.0, 0), ('a/second.py', 1.0, 0),
+            ('c/source.py', 0.9, 0), ('b/second.py', 0.97, 0), ('a/third.py', 1.0, 0))]
+        expected = [('a/first.py', 0), ('a/first.py', 20), ('a/second.py', 0),
+                    ('a/third.py', 0), ('b/helper.py', 0), ('b/second.py', 0),
+                    ('c/source.py', 0), ('root.py', 0)]
+        actual = SCORER['select_results'](records, 'directory-rounds-v1')
+        self.assertEqual([(record['path'], record['start_byte']) for record in actual], expected)
+
+    def test_replay_requires_policy_but_historical_actual_outputs_still_score(self):
+        run = oracle(self.corpus, self.sources, 'calibration')
+        expected = score(self.corpus, self.sources, run)['metrics']
+        for policy in (None, 'unknown-policy'):
+            with self.subTest(policy=policy):
+                if policy is None:
+                    run.pop('result_selection')
+                else:
+                    run['result_selection'] = policy
+                self.assertEqual(score(self.corpus, self.sources, run)['metrics'], expected)
+                with self.assertRaisesRegex(ScoreError, 'result_selection'):
+                    SCORER['calibration_grid'](self.corpus, self.sources, run, [0.65])
+                with self.assertRaisesRegex(ScoreError, 'result_selection'):
+                    SCORER['freeze'](self.corpus, self.sources, run, 0.65)
 
     def test_base_corpus_scores_with_same_contract(self):
         corpus = json.loads((HERE / 'corpus.json').read_text())
