@@ -33,7 +33,7 @@ Select your agent and installation scope when prompted. The skill and CLI instal
 
 ## Search behavior
 
-Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Larger searches also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order.
+Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Default searches over larger scopes also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order. Thorough mode retains the original source order without preview requests.
 
 Preview scores guide where to read; they never produce result records. Each source request asks up to eight independent relevance questions. Preview requests and source requests share the limits below. A scope that fits one source request and 32 KiB skips previews.
 
