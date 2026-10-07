@@ -1431,6 +1431,16 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
         );
         assert_eq!(report.budgets.max_attempts, 18);
         assert_eq!(report.budgets.max_encoded_request_bytes, 640 * 1024);
+        let events: Vec<_> = report
+            .judgment_events
+            .iter()
+            .filter(|event| event.name == "w1")
+            .map(|event| (event.donor.as_deref(), event.probability))
+            .collect();
+        assert_eq!(
+            events,
+            [(None, Some(initial)), (Some("w0"), Some(replacement))]
+        );
     }
 }
 

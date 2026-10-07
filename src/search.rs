@@ -318,6 +318,12 @@ pub struct RawJudgment {
     pub end_line: usize,
     pub probability: Option<f64>,
 }
+#[derive(Clone, Debug)]
+pub struct JudgmentEvent {
+    pub name: String,
+    pub donor: Option<String>,
+    pub probability: Option<f64>,
+}
 #[derive(Debug, Serialize)]
 pub struct SearchCoverage {
     pub source: Coverage,
@@ -372,6 +378,8 @@ pub struct Report {
     pub raw_judgments: Vec<RawJudgment>,
     #[serde(skip)]
     pub sent_names: Vec<String>,
+    #[serde(skip)]
+    pub judgment_events: Vec<JudgmentEvent>,
 }
 impl Report {
     pub fn exit_code(&self) -> u8 {
@@ -600,6 +608,7 @@ async fn execute_with_policy(
     let mut pending_errors = Vec::new();
     let mut sent = BTreeSet::new();
     let mut probabilities = BTreeMap::new();
+    let mut judgment_events = Vec::new();
     let mut checked = BTreeSet::new();
     let mut fresh = BTreeSet::new();
     let mut changed_files = Vec::new();
@@ -804,6 +813,8 @@ async fn execute_with_policy(
                         }
                         for judgment in judgments {
                             let index = judgment.name.strip_prefix('w').and_then(|name| name.parse::<usize>().ok()).expect("provider validates batch names");
+                            let donor = match &job.purpose { Purpose::Related { donor, .. } => Some(format!("w{donor}")), _ => None };
+                            judgment_events.push(JudgmentEvent { name: judgment.name, donor, probability: judgment.probability });
                             if matches!(job.purpose, Purpose::Related { .. }) && judgment.probability.is_none() {
                                 errors.push(SearchError { code: "provider_refusal", status: None });
                                 continue;
@@ -997,6 +1008,7 @@ async fn execute_with_policy(
         omitted_metadata_records: 0,
         raw_judgments,
         sent_names: sent.iter().map(|index| format!("w{index}")).collect(),
+        judgment_events,
     }
 }
 

@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .filter_map(|judgment| {
             judgment.probability.map(|probability| {
                 serde_json::json!({
+                    "name": judgment.name,
                     "path": judgment.path,
                     "start_byte": judgment.start_byte,
                     "end_byte": judgment.end_byte,
@@ -79,6 +80,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "end_line": judgment.end_line,
                     "score": probability,
                 })
+            })
+        })
+        .collect();
+    let judgment_events: Vec<_> = report
+        .judgment_events
+        .iter()
+        .map(|event| {
+            serde_json::json!({
+                "name": event.name,
+                "donor": event.donor,
+                "score": event.probability,
             })
         })
         .collect();
@@ -90,6 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "available_candidates": report.coverage.windows_planned,
             "discovered_candidates": report.coverage.windows_selected,
             "judgments": judgments,
+            "judgment_events": judgment_events,
             "returned_count": results.len(),
             "results": results,
             "output_truncated": report.output_truncated,
