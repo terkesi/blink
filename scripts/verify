@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Build and drive Blink against disposable source, preserving command evidence."""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+import uuid
+
+
+def fingerprint(root):
+    result = {}
+    for base, dirs, files in os.walk(root, followlinks=False):
+        for name in sorted(dirs + files):
+            path = Path(base) / name
+            metadata = path.lstat()
+            entry = {"mode": metadata.st_mode, "mtime_ns": metadata.st_mtime_ns}
+            if stat.S_ISLNK(metadata.st_mode):
+                entry["link"] = os.readlink(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            result[str(path.relative_to(root))] = entry
+    return result
+
+
+def main():
+    repo = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="Evidence directory, which must be empty or absent")
+    args = parser.parse_args()
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output = (args.output or repo / "artifacts" / "verification" / (stamp + "-" + uuid.uuid4().hex[:8])).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        parser.error("the evidence directory must be empty to preserve prior proof")
+    environment = os.environ.copy()
+    environment.pop("OPENAI_API_KEY", None)
+    commands = []
+
+    def save(name, value):
+        (output / name).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+    def run(name, command, expected=0, env=None):
+        completed = subprocess.run(command, cwd=repo, env=env or environment, capture_output=True, timeout=180)
+        (output / (name + ".stdout")).write_bytes(completed.stdout)
+        (output / (name + ".stderr")).write_bytes(completed.stderr)
+        (output / (name + ".status")).write_text(str(completed.returncode) + "\n")
+        commands.append({"name": name, "argv": [str(arg) for arg in command], "status": completed.returncode})
+        save("commands.json", commands)
+        assert completed.returncode == expected, "%s returned %s, expected %s; inspect %s" % (name, completed.returncode, expected, output)
+        return completed
+
+    fixture = None
+    success = False
+    try:
+        build = run("build", ["cargo", "build", "--locked", "--message-format=json"])
+        artifacts = [json.loads(line) for line in build.stdout.splitlines()]
+        binary = next(item["executable"] for item in artifacts if item.get("reason") == "compiler-artifact" and item.get("executable") and item["target"]["name"] == "blink")
+        version = re.search(r'^version = "([^"]+)"', (repo / "Cargo.toml").read_text(), re.MULTILINE).group(1)
+        doctor = json.loads(run("doctor-absent", [binary, "doctor", "--json"]).stdout)
+        assert doctor["configuration"]["OPENAI_API_KEY"]["present"] is False
+        assert doctor["provider_contacted"] is False
+        assert doctor["version"] == version
+        synthetic_env = environment.copy()
+        synthetic_env["OPENAI_API_KEY"] = "synthetic-key-for-verification-only"
+        present = run("doctor-present", [binary, "--json", "doctor"], env=synthetic_env)
+        assert json.loads(present.stdout)["configuration"]["OPENAI_API_KEY"]["present"] is True
+        assert synthetic_env["OPENAI_API_KEY"].encode() not in present.stdout + present.stderr
+        terminal_doctor = run("doctor-terminal", [binary, "doctor"])
+        assert b"absent" in terminal_doctor.stdout
+        reported_version = json.loads(run("version-json", [binary, "version", "--json"]).stdout)
+        assert reported_version["schema_version"] == 1 and reported_version["version"] == version
+        assert run("version-terminal", [binary, "version"]).stdout.decode() == "blink " + version + "\n"
+
+        fixture = Path(tempfile.mkdtemp(prefix="blink-verify-"))
+        root = fixture / "source"
+        root.mkdir()
+        (root / ".git").mkdir()
+        samples = {
+            "README.md": b"Inventory fixture\n",
+            "src/app.rs": b"fn main() {}\n",
+            "src/keep.log": b"allowed by nested rule\n",
+            ".gitignore": b"*.log\nignored/\n!ignored/reinclude.rs\n",
+            ".blinkignore": b"generated/\n",
+            ".ignore": b"README.md\n",
+            "src/.gitignore": b"!keep.log\n",
+            "src/drop.log": b"ignored log\n",
+            "ignored/reinclude.rs": b"excluded descendant\n",
+            "generated/a.rs": b"excluded generated\n",
+            ".env": b"OPENAI_API_KEY=synthetic-file-secret\n",
+            ".env.example": b"synthetic-file-secret\n",
+            "secret.pem": b"synthetic-private-key\n",
+            "credentials/data.json": b"synthetic-credential\n",
+            ".hidden/hidden.rs": b"hidden\n",
+            "node_modules/dependency.js": b"dependency\n",
+            "target/output.rs": b"build output\n",
+            "invalid.dat": bytes([255]),
+            "binary.dat": b"data\0tail",
+            "large.rs": b"x" * (1024 * 1024 + 1),
+        }
+        for name, content in samples.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        outside = fixture / "outside"
+        outside.mkdir()
+        (outside / "outside.rs").write_text("outside-root-source\n")
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+        (root / "src" / "link.rs").symlink_to(outside / "outside.rs")
+        before = fingerprint(root)
+        save("source-before.json", before)
+        inventory = run("files-json", [binary, "files", str(root), "--json"])
+        data = json.loads(inventory.stdout)
+        assert data["schema_version"] == 1 and data["command"] == "files"
+        expected_paths = ["README.md", "src/app.rs", "src/keep.log"]
+        assert [entry["path"] for entry in data["files"]] == expected_paths
+        for entry in data["files"]:
+            content = samples[entry["path"]]
+            assert entry["bytes"] == len(content)
+            assert entry["sha256"] == hashlib.sha256(content).hexdigest()
+        assert data["coverage"]["complete"] is True
+        assert data["coverage"]["excluded"]["symlink"] == 2
+        assert data["coverage"]["excluded"]["sensitive"] == 4
+        assert data["coverage"]["excluded"]["too_large"] == 1
+        assert data["coverage"]["excluded"]["binary"] == 1
+        assert data["coverage"]["excluded"]["non_utf8_content"] == 1
+        assert inventory.stderr == b""
+        again = json.loads(run("files-json-repeat", [binary, "--json", "files", str(root)]).stdout)
+        assert again == data
+        terminal = run("files-terminal", [binary, "files", str(root)])
+        assert [json.loads(line) for line in terminal.stdout.splitlines()] == expected_paths
+        assert b"coverage complete" in terminal.stderr
+        run("missing-root", [binary, "files", str(fixture / "absent"), "--json"], expected=2)
+        invalid = fixture / "invalid-policy"
+        invalid.mkdir()
+        (invalid / ".gitignore").write_bytes(bytes([255]))
+        incomplete = json.loads(run("incomplete-policy", [binary, "files", str(invalid), "--json"], expected=3).stdout)
+        assert incomplete["coverage"]["complete"] is False
+        after = fingerprint(root)
+        save("source-after.json", after)
+        assert after == before, "source changed during read-only commands"
+        for record in commands:
+            captured = (output / (record["name"] + ".stdout")).read_bytes() + (output / (record["name"] + ".stderr")).read_bytes()
+            assert b"synthetic-file-secret" not in captured
+            assert b"outside-root-source" not in captured
+        success = True
+    finally:
+        fixture_path = str(fixture) if fixture else None
+        if fixture:
+            shutil.rmtree(fixture)
+        save("summary.json", {"passed": success, "fixture": fixture_path, "fixture_removed": fixture is None or not fixture.exists(), "evidence_preserved": output.is_dir(), "source_mutation": False if success else "unverified", "command_count": len(commands)})
+        print("Evidence: " + str(output))
+    assert (output / "files-json.stdout").is_file()
+    assert json.loads((output / "summary.json").read_text())["fixture_removed"]
+    print("PASS: real CLI commands, source unchanged, fixture removed, evidence preserved")
+
+
+if __name__ == "__main__":
+    main()
