@@ -30,6 +30,8 @@ pub struct Batch {
 struct Input<'a> {
     query: &'a str,
     candidates: Vec<InputCandidate<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    related_source: Option<InputCandidate<'a>>,
 }
 
 #[derive(Serialize)]
@@ -58,14 +60,32 @@ struct Request<'a> {
 
 impl Batch {
     pub fn encode(query: &str, candidates: &[Candidate<'_>]) -> Result<Self, Failure> {
-        Self::encode_with(query, candidates, false)
+        Self::encode_with(query, candidates, false, None, false)
     }
 
     pub(crate) fn encode_routes(
         query: &str,
         candidates: &[Candidate<'_>],
     ) -> Result<Self, Failure> {
-        Self::encode_with(query, candidates, true)
+        Self::encode_with(query, candidates, true, None, false)
+    }
+
+    pub(crate) fn encode_with_context(
+        query: &str,
+        candidates: &[Candidate<'_>],
+        donor: &Candidate<'_>,
+    ) -> Result<Option<Self>, Failure> {
+        Self::encode(query, std::slice::from_ref(donor))?;
+        let plain = Self::encode(query, candidates)?;
+        let contextual = Self::encode_with(query, candidates, false, Some(donor), true)?;
+        Ok((contextual.encoded_len() - plain.encoded_len() <= 4096).then_some(contextual))
+    }
+
+    pub(crate) fn encode_related_control(
+        query: &str,
+        candidates: &[Candidate<'_>],
+    ) -> Result<Self, Failure> {
+        Self::encode_with(query, candidates, false, None, true)
     }
 
     pub(crate) fn route_card_len(candidate: &Candidate<'_>) -> usize {
@@ -87,6 +107,8 @@ impl Batch {
         query: &str,
         candidates: &[Candidate<'_>],
         route: bool,
+        donor: Option<&Candidate<'_>>,
+        related: bool,
     ) -> Result<Self, Failure> {
         if query.trim().is_empty()
             || candidates.is_empty()
@@ -131,6 +153,8 @@ impl Batch {
                 name: candidate.name,
                 instructions: if route {
                     ROUTE_INSTRUCTIONS.replace("{name}", candidate.name)
+                } else if related {
+                    format!("Judge only candidate {}. Use related_source as evidence for its relationship to the query; do not score related_source. {INSTRUCTIONS}", candidate.name)
                 } else {
                     format!(
                         "Use only the candidate named {} in the JSON input. {INSTRUCTIONS}",
@@ -143,6 +167,13 @@ impl Batch {
         let input = serde_json::to_string(&Input {
             query,
             candidates: input_candidates,
+            related_source: donor.map(|candidate| InputCandidate {
+                name: candidate.name,
+                path: candidate.path,
+                text: candidate.text,
+                start_line: candidate.start_line,
+                end_line: candidate.end_line,
+            }),
         })
         .map_err(|_| Failure::new(Code::InvalidRequest, None, None))?;
         let body = serde_json::to_vec(&Request {

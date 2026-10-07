@@ -35,7 +35,9 @@ Select your agent and installation scope when prompted. The skill and CLI instal
 
 Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Default searches over larger scopes also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order. Thorough mode retains the original source order without preview requests.
 
-Preview scores guide where to read; they never produce result records. Each source request asks up to eight independent relevance questions. Preview requests and source requests share the limits below. A scope that fits one source request and 32 KiB skips previews.
+Preview scores guide where to read; they never produce result records. Each source request asks up to eight independent relevance questions. A scope that fits one source request and 32 KiB skips previews.
+
+After the initial default pass, accepted source can guide one bounded follow-up pass. Blink selects original source windows using shared identifiers and supplies related accepted source as context. This is a lexical relationship, not a call graph. Follow-up judgments can add or retract matches. Donor source is checked before each request, and accepted follow-up results are checked before output. A deadline preserves already-validated initial results.
 
 Accepted overlapping windows merge into source excerpts. On the first positive judgment for a file, Blink rereads it through the pinned root and compares its hash. That check lets already-validated results survive a later request timeout. Changed or unreadable files are omitted and the operation is incomplete. A later write can still occur after the check.
 
@@ -44,13 +46,13 @@ When accepted records exceed `--limit`, Blink selects the best record from each 
 | Limit | Default | `--thorough` |
 | --- | --- | --- |
 | Search deadline | 15 seconds | 60 seconds |
-| HTTP attempts, including retries | 8 | 32 |
-| Total encoded request bodies | 256 KiB | 1 MiB |
+| HTTP attempts, including retries | 18 | 32 |
+| Total encoded request bodies | 640 KiB | 1 MiB |
 | Concurrent HTTP requests | 4 | 4 |
 | Returned records | 8 | 8 |
 | Encoded stdout | 32 KiB | 32 KiB |
 
-`--limit` accepts 1 through 100 records. `--timeout` overrides the deadline with a positive number of seconds, up to 300. Each source batch can retry once after a transient failure, within the same attempt, byte, and time limits. Preview requests do not retry. Redirects and automatic HTTP-client retries are disabled. Cancellation drops local requests; it cannot recall work already received by the provider.
+`--limit` accepts 1 through 100 records. `--timeout` overrides the deadline with a positive number of seconds, up to 300. Default fresh work is limited to sixteen requests and 512 KiB, including an initial pass of at most eight requests and 256 KiB. The remaining allowance is reserved for retries. Every actual attempt counts against one shared ledger, so an early retry can reduce later fresh work. Each batch, including a preview batch, can retry once after a transient failure within the attempt, byte, and time limits. Redirects and automatic HTTP-client retries are disabled. Cancellation drops local requests; it cannot recall work already received by the provider.
 
 JSON schema version 1 includes `results`, `operation`, `coverage`, `budgets`, `errors`, and `output_truncated`. Each result has a relative `path`, the whole-file `sha256`, zero-based byte offsets `start_byte` and exclusive `end_byte`, inclusive one-based line numbers, `probability`, and the exact `excerpt`. Terminal output escapes control characters. JSON preserves the source bytes as decoded UTF-8 text.
 
@@ -60,7 +62,7 @@ The relevance threshold remains provisional at 0.5. At `2560970`, two independen
 
 A subsequent evaluation of three public repositories exposed a larger gap. With the same production source at `afe8d19`, default search returned every required span without execution errors for 5 of 30 positive questions. It returned source for none of 15 absent-behavior questions. Three of the 45 searches had execution errors, and all reported incomplete coverage. These are single trials per question, not an estimate of general accuracy. Narrow the search root when possible, inspect returned source, and use other search methods when coverage is incomplete. See the [verification guide](docs/verification.md) for metric definitions and evaluation commands.
 
-Region previews improved a separate calibration set from 4/12 to 7/12 complete positive answers in two runs. Both returned source on 5/12 negative questions and had no execution errors. This is calibration evidence, not fresh validation or a release claim. The [benchmark history](benchmarks/2026-10-07.md) records the comparisons and limits.
+Region previews improved a separate calibration set from 4/12 to 7/12 complete positive answers. A bounded related-source pass then reached 10/12 in two runs, with source on 5/12 negative questions and no execution errors. Median requests rose from eight to sixteen. This is calibration evidence, not fresh validation or a release claim. The [benchmark history](benchmarks/2026-10-07.md) records the comparisons and limits.
 
 ## Inventory policy
 

@@ -441,7 +441,7 @@ async fn retry_is_once_and_charges_the_same_encoded_body_again() {
 async fn retry_cannot_escape_attempt_or_byte_reservations() {
     let root = fixture(1);
     let server = Server::new(|_, _| Reply::status(503)).await;
-    let options = Options::default();
+    let options = Options::thorough();
     let report = execute_with_policy(
         Source::open(root.path()).unwrap(),
         "query".into(),
@@ -752,7 +752,7 @@ async fn retry_bytes_are_reserved_before_the_retry_can_reach_the_server() {
     let report = execute_with_policy(
         Source::open(root.path()).unwrap(),
         "item behavior".into(),
-        Options::default(),
+        Options::thorough(),
         server.provider(),
         Arc::new(AtomicBool::new(false)),
         Policy {
@@ -1012,7 +1012,7 @@ async fn delayed_routes_promote_exact_late_source_without_authorizing_results() 
 }
 
 #[tokio::test]
-async fn failed_and_refused_routes_fall_back_without_retry_or_source_coverage() {
+async fn terminal_and_refused_routes_fall_back_without_retry_or_source_coverage() {
     for refusal in [false, true] {
         let root = fixture(80);
         let baseline = prepare(
@@ -1023,7 +1023,7 @@ async fn failed_and_refused_routes_fall_back_without_retry_or_source_coverage() 
         );
         let server = Server::new(move |request, _| {
             if !is_route(request) { return Reply::scores(request, 0.1); }
-            if !refusal { return Reply::status(503); }
+            if !refusal { return Reply::status(400); }
             let answers: Vec<_> = request["questions"].as_array().unwrap().iter().map(|question| json!({"type": "refusal", "name": question["name"], "reason": "test"})).collect();
             Reply { status: 200, body: json!({"answers": answers}), delay: Duration::ZERO, retry_after: None }
         }).await;
@@ -1367,4 +1367,626 @@ async fn default_keeps_the_same_route_and_source_bodies() {
     assert_eq!(report.budgets.attempts, expected.attempts);
     assert_eq!(report.budgets.encoded_request_bytes, expected.bytes);
     assert_eq!(report.coverage.windows_judged, 48);
+}
+
+fn related_fixture() -> TempDir {
+    let root = fixture(0);
+    fs::write(
+        root.path().join("a.rs"),
+        "fn caller() { distinctive_helper(); }\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("b.rs"), "fn distinctive_helper() {}\n").unwrap();
+    root
+}
+fn has_context(request: &Value) -> bool {
+    request["questions"][0]["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("Use related_source")
+}
+fn initial_related_scores(request: &Value, target: f64) -> Reply {
+    let mut reply = Reply::scores(request, target);
+    for answer in reply.body["answers"].as_array_mut().unwrap() {
+        if answer["name"] == "w0" {
+            answer["probability"] = json!(0.9);
+        }
+    }
+    reply
+}
+
+#[tokio::test]
+async fn related_replaces_probabilities_in_both_directions_without_extra_coverage() {
+    for (initial, replacement) in [(0.1, 0.9), (0.9, 0.1)] {
+        let server = Server::new(move |request, _| {
+            if has_context(request) {
+                Reply::scores(request, replacement)
+            } else {
+                initial_related_scores(request, initial)
+            }
+        })
+        .await;
+        let report = run(&related_fixture(), &server, Options::default()).await;
+        assert_eq!(
+            report
+                .raw_judgments
+                .iter()
+                .find(|j| j.name == "w1")
+                .unwrap()
+                .probability,
+            Some(replacement)
+        );
+        assert_eq!(
+            report.results.iter().any(|r| r.path == "b.rs"),
+            replacement >= 0.5
+        );
+        assert_eq!(report.coverage.windows_selected, 2);
+        assert_eq!(report.coverage.windows_sent, 2);
+        assert_eq!(report.coverage.windows_judged, 2);
+        let bodies = server.bodies();
+        assert_eq!(report.budgets.attempts, bodies.len());
+        assert_eq!(
+            report.budgets.encoded_request_bytes,
+            bodies.iter().map(Vec::len).sum::<usize>()
+        );
+        assert_eq!(report.budgets.max_attempts, 18);
+        assert_eq!(report.budgets.max_encoded_request_bytes, 640 * 1024);
+    }
+}
+
+#[tokio::test]
+async fn related_refusal_and_error_retain_prior_probability_and_expose_failure() {
+    for refusal in [true, false] {
+        let server = Server::new(move |request, _| {
+            if !has_context(request) {
+                return initial_related_scores(request, 0.9);
+            }
+            if !refusal {
+                return Reply::status(400);
+            }
+            let mut reply = Reply::scores(request, 0.1);
+            for answer in reply.body["answers"].as_array_mut().unwrap() {
+                answer.as_object_mut().unwrap().remove("probability");
+                answer["type"] = json!("refusal");
+                answer["refusal"] = json!("cannot judge");
+            }
+            reply
+        })
+        .await;
+        let report = run(&related_fixture(), &server, Options::default()).await;
+        assert_eq!(
+            report
+                .raw_judgments
+                .iter()
+                .find(|j| j.name == "w1")
+                .unwrap()
+                .probability,
+            Some(0.9)
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.code == if refusal { "provider_refusal" } else { "http" })
+        );
+        assert_eq!(report.operation, Operation::Incomplete);
+    }
+}
+
+#[tokio::test]
+async fn related_rechecks_donor_before_retry_and_target_before_output() {
+    for donor_change in [true, false] {
+        let root = related_fixture();
+        let path = root.path().join(if donor_change { "a.rs" } else { "b.rs" });
+        let server = Server::new(move |request, _| {
+            if !has_context(request) {
+                return initial_related_scores(request, 0.1);
+            }
+            fs::write(&path, "changed source\n").unwrap();
+            if donor_change {
+                Reply::status(503)
+            } else {
+                Reply::scores(request, 0.9)
+            }
+        })
+        .await;
+        let report = run(&root, &server, Options::default()).await;
+        assert_eq!(server.bodies().len(), 2);
+        assert!(report.changed_files.contains(&if donor_change {
+            "a.rs".into()
+        } else {
+            "b.rs".into()
+        }));
+        assert!(!report.results.iter().any(|r| r.path == "b.rs"));
+        if donor_change {
+            assert_eq!(
+                report
+                    .raw_judgments
+                    .iter()
+                    .find(|j| j.name == "w1")
+                    .unwrap()
+                    .probability,
+                Some(0.1)
+            );
+            assert!(report.errors.iter().any(|e| e.code == "transient_http"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn related_admits_original_unjudged_windows_with_unique_coverage() {
+    let root = fixture(0);
+    for index in 0..80 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            format!("fn distinctive_helper() {{ step_{index}(); }}\n"),
+        )
+        .unwrap();
+    }
+    let server = Server::new(move |request, _| Reply::scores(request, 0.9)).await;
+    let report = run(&root, &server, Options::default()).await;
+    let bodies = server.bodies();
+    let initial_names: BTreeSet<_> = bodies
+        .iter()
+        .filter_map(|body| {
+            let value: Value = serde_json::from_slice(body).unwrap();
+            if has_context(&value) {
+                None
+            } else {
+                Some(
+                    value["questions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|q| {
+                            q["name"]
+                                .as_str()
+                                .filter(|n| n.starts_with('w'))
+                                .map(str::to_owned)
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
+        })
+        .flatten()
+        .collect();
+    assert!(
+        report
+            .raw_judgments
+            .iter()
+            .any(|j| !initial_names.contains(&j.name) && j.probability == Some(0.9))
+    );
+    assert!(report.coverage.windows_judged > initial_names.len());
+    assert_eq!(report.coverage.windows_sent, report.sent_names.len());
+    assert_eq!(report.budgets.attempts, bodies.len());
+    assert_eq!(
+        report.budgets.encoded_request_bytes,
+        bodies.iter().map(Vec::len).sum::<usize>()
+    );
+}
+
+#[tokio::test]
+async fn related_retry_body_is_immutable_and_recovery_clears_failure() {
+    let failed = Arc::new(AtomicBool::new(false));
+    let server = Server::new(move |request, _| {
+        if !has_context(request) {
+            return initial_related_scores(request, 0.1);
+        }
+        if !failed.swap(true, Ordering::SeqCst) {
+            Reply::status(503)
+        } else {
+            Reply::scores(request, 0.9)
+        }
+    })
+    .await;
+    let report = run(&related_fixture(), &server, Options::default()).await;
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 3);
+    assert_eq!(bodies[1], bodies[2]);
+    assert_eq!(report.budgets.retries, 1);
+    assert_eq!(
+        report.budgets.encoded_request_bytes,
+        bodies.iter().map(Vec::len).sum::<usize>()
+    );
+    assert!(report.errors.is_empty());
+    assert!(report.results.iter().any(|r| r.path == "b.rs"));
+}
+
+#[tokio::test]
+async fn related_deadline_and_cancellation_restore_initial_verified_results() {
+    for cancel in [false, true] {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let server = Server::new(move |request, _| {
+            if !has_context(request) {
+                return initial_related_scores(request, 0.1);
+            }
+            if cancel {
+                signal.store(true, Ordering::SeqCst);
+            }
+            let mut reply = Reply::scores(request, 0.9);
+            reply.delay = Duration::from_secs(1);
+            reply
+        })
+        .await;
+        let root = related_fixture();
+        let report = execute(
+            Source::open(root.path()).unwrap(),
+            "helper".into(),
+            Options {
+                timeout: Duration::from_millis(150),
+                ..Options::default()
+            },
+            server.provider(),
+            cancelled,
+        )
+        .await;
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].path, "a.rs");
+        assert_eq!(
+            report
+                .raw_judgments
+                .iter()
+                .find(|j| j.name == "w1")
+                .unwrap()
+                .probability,
+            Some(0.1)
+        );
+        assert!(
+            report
+                .budgets
+                .stops
+                .contains(&if cancel { "cancelled" } else { "deadline" })
+        );
+    }
+}
+
+#[test]
+fn related_plan_packs_discontiguous_admissions_before_rejudgments() {
+    let root = fixture(0);
+    for index in 0..30 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            if index % 2 == 0 {
+                "link_alpha"
+            } else {
+                "link_bravo"
+            },
+        )
+        .unwrap();
+    }
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let initial = BTreeMap::from([
+        (0, Some(0.9)),
+        (1, Some(0.9)),
+        (2, Some(0.1)),
+        (3, Some(0.1)),
+    ]);
+    let (jobs, stop) = related::plan(
+        &prepared,
+        "behavior",
+        &initial,
+        &BTreeSet::from([0, 1]),
+        0.5,
+        Reservation {
+            attempts: 8,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 16,
+            max_bytes: 512 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    assert_eq!(stop, None);
+    let plan: Vec<_> = jobs
+        .iter()
+        .map(|job| match &job.purpose {
+            Purpose::Related { targets, donor } => (*donor, targets.clone()),
+            _ => panic!("related jobs only"),
+        })
+        .collect();
+    assert_eq!(plan[0], (0, vec![4, 6, 8, 10, 12, 14, 16, 18]));
+    assert_eq!(plan[1], (1, vec![5, 7, 9, 11, 13, 15, 17, 19]));
+    assert_eq!(plan[2], (0, vec![20, 22, 24, 26, 28, 2]));
+    assert_eq!(plan[3], (1, vec![21, 23, 25, 27, 29, 3]));
+    let actual_bytes: usize = jobs.iter().map(|job| job.batch.encoded_len()).sum();
+    eprintln!(
+        "related_plan_receipt {}",
+        json!({"jobs":plan, "actual_bytes":actual_bytes, "evidence":INCLUDE_RELATED_EVIDENCE})
+    );
+}
+
+#[tokio::test]
+async fn related_mutated_donor_is_abandoned_before_later_dispatch() {
+    let root = fixture(0);
+    for index in 0..80 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            format!("fn distinctive_helper() {{ step_{index}(); }}\n"),
+        )
+        .unwrap();
+    }
+    let donor = root.path().join("f000.rs");
+    let server = Server::new(move |request, _| {
+        if has_context(request) {
+            fs::write(&donor, "changed\n").unwrap();
+            Reply::scores(request, 0.1)
+        } else {
+            initial_related_scores(request, 0.1)
+        }
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    let related_count = server
+        .bodies()
+        .iter()
+        .filter(|b| has_context(&serde_json::from_slice(b).unwrap()))
+        .count();
+    assert!(related_count > 0 && related_count <= CONCURRENCY);
+    assert!(report.changed_files.contains(&"f000.rs".to_owned()));
+    assert!(!report.results.iter().any(|r| r.path == "f000.rs"));
+}
+
+#[tokio::test]
+async fn related_success_cannot_erase_initial_refusal_or_grow_donors() {
+    let root = related_fixture();
+    fs::write(
+        root.path().join("b.rs"),
+        "distinctive_helper secondary_relation\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("c.rs"), "secondary_relation\n").unwrap();
+    let server = Server::new(|request, _| {
+        if has_context(request) {
+            return Reply::scores(request, 0.9);
+        }
+        let mut reply = initial_related_scores(request, 0.1);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["name"] == "w1" {
+                answer["type"] = json!("refusal");
+                answer.as_object_mut().unwrap().remove("probability");
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|j| j.name == "w1")
+            .unwrap()
+            .probability,
+        Some(0.9)
+    );
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|j| j.name == "w2")
+            .unwrap()
+            .probability,
+        Some(0.1)
+    );
+    assert!(report.errors.iter().any(|e| e.code == "provider_refusal"));
+    assert_eq!(report.operation, Operation::Incomplete);
+}
+
+#[test]
+fn related_plan_prioritizes_stronger_relationship_before_source_ordinal() {
+    let root = fixture(0);
+    for index in 0..20 {
+        let text = if index == 0 {
+            "shared_name much_longer_shared_identifier"
+        } else if index >= 16 {
+            "much_longer_shared_identifier"
+        } else {
+            "shared_name"
+        };
+        fs::write(root.path().join(format!("f{index:03}.rs")), text).unwrap();
+    }
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let (jobs, _) = related::plan(
+        &prepared,
+        "behavior",
+        &BTreeMap::from([(0, Some(0.9)), (19, Some(0.1))]),
+        &BTreeSet::from([0]),
+        0.5,
+        Reservation {
+            attempts: 8,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 16,
+            max_bytes: 512 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    let plan: Vec<_> = jobs
+        .iter()
+        .map(|job| match &job.purpose {
+            Purpose::Related { targets, donor } => (*donor, targets.clone()),
+            _ => panic!("related jobs only"),
+        })
+        .collect();
+    assert_eq!(plan[0], (0, vec![16, 17, 18, 19, 1, 2, 3, 4]));
+    assert_eq!(plan[1], (0, vec![5, 6, 7, 8, 9, 10, 11, 12]));
+    assert_eq!(plan[2], (0, vec![13, 14, 15]));
+    eprintln!(
+        "related_priority_receipt {}",
+        json!({"jobs":plan, "actual_bytes":jobs.iter().map(|job| job.batch.encoded_len()).sum::<usize>(), "evidence":INCLUDE_RELATED_EVIDENCE})
+    );
+}
+
+#[tokio::test]
+async fn stopped_completed_outcomes_preserve_errors_without_accepting_judgments() {
+    let server = Server::new(|_, _| Reply::status(503)).await;
+    let batch = Batch::encode(
+        "behavior",
+        &[Candidate {
+            name: "w0",
+            path: "a.rs",
+            text: "source",
+            start_line: 1,
+            end_line: 1,
+        }],
+    )
+    .unwrap();
+    let failed = Attempt::Response(server.provider().attempt(&batch).await);
+    let error = failed
+        .stopped_error()
+        .expect("observed HTTP error survives stop");
+    assert_eq!(error.code, "transient_http");
+    assert_eq!(error.status, Some(503));
+    let refused = Attempt::Response(Ok(vec![Judgment {
+        name: "w0".into(),
+        probability: None,
+    }]));
+    assert_eq!(refused.stopped_error().unwrap().code, "provider_refusal");
+    assert_eq!(
+        Attempt::Deadline.stopped_error().unwrap().code,
+        "attempt_timeout"
+    );
+    let accepted = Attempt::Response(Ok(vec![Judgment {
+        name: "w0".into(),
+        probability: Some(0.9),
+    }]));
+    assert!(accepted.stopped_error().is_none());
+}
+
+fn retry_headroom_fixture() -> TempDir {
+    let root = fixture(0);
+    for index in 0..160 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            format!("fn distinctive_helper() {{ step_{index}(); }}\n"),
+        )
+        .unwrap();
+    }
+    root
+}
+
+#[tokio::test]
+async fn retry_headroom_success_body_receipt() {
+    let server = Server::new(|request, _| Reply::scores(request, 0.9)).await;
+    let report = run(&retry_headroom_fixture(), &server, Options::default()).await;
+    let mut bodies = server.bodies();
+    assert_eq!(bodies.len(), 16);
+    bodies.sort();
+    println!(
+        "success_body_receipt {}",
+        json!({"bodies": bodies.iter().map(|b| format!("{:x}", Sha256::digest(b))).collect::<Vec<_>>(), "sent": report.sent_names})
+    );
+    assert!(report.errors.is_empty());
+}
+
+#[tokio::test]
+async fn late_related_retries_use_only_two_extra_attempts_and_exact_bodies() {
+    for failures in [1, 3] {
+        let server = Server::new(move |request, number| {
+            if (17 - failures..=16).contains(&number) {
+                Reply::status(503)
+            } else {
+                Reply::scores(request, 0.9)
+            }
+        })
+        .await;
+        let report = run(&retry_headroom_fixture(), &server, Options::default()).await;
+        let bodies = server.bodies();
+        assert_eq!(bodies.len(), 16 + failures.min(2));
+        assert_eq!(report.budgets.retries, failures.min(2));
+        assert!(report.budgets.encoded_request_bytes <= 640 * 1024);
+        assert_eq!(
+            report.budgets.encoded_request_bytes,
+            bodies.iter().map(Vec::len).sum::<usize>()
+        );
+        for retried in &bodies[16..] {
+            assert!(bodies[..16].contains(retried));
+        }
+        if failures == 1 {
+            assert!(report.errors.is_empty());
+        } else {
+            assert!(report.errors.iter().any(|e| e.code == "retry_budget"));
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|e| e.code == "transient_http" && e.status == Some(503))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn route_retry_holds_barrier_and_recovers_once() {
+    let routes = AtomicUsize::new(0);
+    let sources = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&sources);
+    let server = Server::new(move |request, _| {
+        if is_route(request) {
+            if routes.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Reply::status(503);
+            }
+            assert_eq!(observed.load(Ordering::SeqCst), 2);
+        } else {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }
+        Reply::scores(request, 0.1)
+    })
+    .await;
+    let report = run(&fixture(80), &server, Options::default()).await;
+    let routes: Vec<_> = server
+        .bodies()
+        .into_iter()
+        .filter(|body| is_route(&serde_json::from_slice(body).unwrap()))
+        .collect();
+    assert_eq!(routes.len(), 2);
+    assert_eq!(routes[0], routes[1]);
+    assert_eq!(report.budgets.retries, 1);
+    assert!(report.errors.is_empty());
+}
+
+#[tokio::test]
+async fn in_flight_retry_keeps_observed_error_at_deadline() {
+    let server = Server::new(|request, number| {
+        if number == 1 {
+            Reply::status(503)
+        } else {
+            let mut reply = Reply::scores(request, 0.9);
+            reply.delay = Duration::from_secs(2);
+            reply
+        }
+    })
+    .await;
+    let report = run(
+        &fixture(1),
+        &server,
+        Options {
+            timeout: Duration::from_millis(350),
+            ..Options::default()
+        },
+    )
+    .await;
+    assert_eq!(report.budgets.retries, 1);
+    assert!(report.budgets.stops.contains(&"deadline"));
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.code == "transient_http" && e.status == Some(503))
+    );
 }

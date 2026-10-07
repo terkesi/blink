@@ -375,3 +375,48 @@ fn route_encoding_shares_validation_and_has_a_separate_bounded_question_cap() {
         serde_json::to_string(&card).unwrap().len() - 2
     );
 }
+
+#[test]
+fn related_evidence_keeps_control_questions_and_bounds_escaped_growth() {
+    let targets = [Candidate {
+        name: "w1",
+        path: "target.rs",
+        text: "shared_identifier()",
+        start_line: 1,
+        end_line: 1,
+    }];
+    let plain = Batch::encode("behavior", &targets).unwrap();
+    let control = Batch::encode_related_control("behavior", &targets).unwrap();
+    let evidence = Candidate {
+        name: "w0",
+        path: "donor.rs",
+        text: "fn shared_identifier() {}",
+        start_line: 2,
+        end_line: 2,
+    };
+    let contextual = Batch::encode_with_context("behavior", &targets, &evidence)
+        .unwrap()
+        .unwrap();
+    let context: Value = serde_json::from_slice(&contextual.body).unwrap();
+    let control: Value = serde_json::from_slice(&control.body).unwrap();
+    assert_eq!(context["questions"], control["questions"]);
+    assert_eq!(contextual.names, ["w1"]);
+    let input: Value = serde_json::from_str(context["input"].as_str().unwrap()).unwrap();
+    assert_eq!(input["related_source"]["text"], evidence.text);
+    assert!(contextual.encoded_len() - plain.encoded_len() <= 4096);
+    let escaped = "\\\"".repeat(800);
+    let evidence = Candidate {
+        text: &escaped,
+        ..evidence
+    };
+    assert!(
+        Batch::encode_with_context("behavior", &targets, &evidence)
+            .unwrap()
+            .is_none()
+    );
+    let invalid = Candidate {
+        path: "../outside.rs",
+        ..evidence
+    };
+    assert!(Batch::encode_with_context("behavior", &targets, &invalid).is_err());
+}

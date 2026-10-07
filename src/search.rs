@@ -1,5 +1,6 @@
 mod bounds;
 mod navigation;
+mod related;
 
 use crate::{
     provider::{Batch, Candidate, Failure, Judgment, Provider},
@@ -20,6 +21,7 @@ use tokio::task::JoinSet;
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const BATCH_SIZE: usize = 8;
 const CONCURRENCY: usize = 4;
+const INCLUDE_RELATED_EVIDENCE: bool = true;
 
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -446,18 +448,47 @@ impl Report {
 enum Purpose {
     Route(Vec<usize>),
     Source(Vec<usize>),
+    Related { targets: Vec<usize>, donor: usize },
 }
 
 #[derive(Clone)]
 struct Job {
     batch: Batch,
     purpose: Purpose,
-    retried: bool,
+    pending_retry: Option<usize>,
     ready: tokio::time::Instant,
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Initial,
+    Related,
+}
+
 enum Attempt {
     Response(Result<Vec<Judgment>, Failure>),
     Deadline,
+}
+
+impl Attempt {
+    fn stopped_error(&self) -> Option<SearchError> {
+        match self {
+            Self::Response(Err(error)) => Some(SearchError {
+                code: error.code(),
+                status: error.status(),
+            }),
+            Self::Response(Ok(judgments)) if judgments.iter().any(|j| j.probability.is_none()) => {
+                Some(SearchError {
+                    code: "provider_refusal",
+                    status: None,
+                })
+            }
+            Self::Deadline => Some(SearchError {
+                code: "attempt_timeout",
+                status: None,
+            }),
+            Self::Response(Ok(_)) => None,
+        }
+    }
 }
 
 pub async fn execute(
@@ -506,6 +537,28 @@ async fn execute_with_policy(
     cancelled: Arc<AtomicBool>,
     policy: Policy,
 ) -> Report {
+    let initial_policy = policy;
+    let policy = if options.thorough {
+        policy
+    } else {
+        Policy {
+            max_attempts: policy.max_attempts * 2,
+            max_bytes: policy.max_bytes * 2,
+            ..policy
+        }
+    };
+    let actual_policy = if options.thorough {
+        policy
+    } else {
+        Policy {
+            max_attempts: policy.max_attempts + 2,
+            max_bytes: policy.max_bytes + 128 * 1024,
+            ..policy
+        }
+    };
+    let mut phase = Phase::Initial;
+    let mut initial_state = None;
+    let mut related_sent = false;
     let started = Instant::now();
     let deadline = started + options.timeout;
     let control = || {
@@ -525,7 +578,7 @@ async fn execute_with_policy(
         Ok(routes) => queue.extend(routes.into_iter().map(|(batch, ids)| Job {
             batch,
             purpose: Purpose::Route(ids),
-            retried: false,
+            pending_retry: None,
             ready: tokio::time::Instant::now(),
         })),
         Err(error) => errors.push(SearchError {
@@ -544,6 +597,7 @@ async fn execute_with_policy(
     let mut tasks = JoinSet::new();
     let mut used = Reservation::default();
     let mut retries = 0;
+    let mut pending_errors = Vec::new();
     let mut sent = BTreeSet::new();
     let mut probabilities = BTreeMap::new();
     let mut checked = BTreeSet::new();
@@ -564,6 +618,11 @@ async fn execute_with_policy(
             }
             Control::Continue => {}
         }
+        let admission = if phase == Phase::Initial {
+            initial_policy
+        } else {
+            policy
+        };
         while tasks.len() < CONCURRENCY {
             if control() != Control::Continue {
                 break;
@@ -572,7 +631,7 @@ async fn execute_with_policy(
             let job = if queue.front().is_some_and(|job| job.ready <= now) {
                 queue.pop_front().expect("ready job")
             } else if !source_exhausted && (routes_pending == 0 || source_jobs < 2) {
-                if used.attempts == policy.max_attempts {
+                if used.attempts >= admission.max_attempts {
                     stops.insert("attempt_limit");
                     source_exhausted = true;
                     break;
@@ -587,7 +646,7 @@ async fn execute_with_policy(
                     Ok(batch) => Job {
                         batch,
                         purpose: Purpose::Source(indices),
-                        retried: false,
+                        pending_retry: None,
                         ready: now,
                     },
                     Err(error) => {
@@ -601,13 +660,33 @@ async fn execute_with_policy(
             } else {
                 break;
             };
+            if let Purpose::Related { donor, .. } = &job.purpose {
+                let file = prepared.windows[*donor].file;
+                if !fresh.contains(&file)
+                    || !related::recheck(
+                        &mut prepared,
+                        file,
+                        &mut fresh,
+                        &mut changed_files,
+                        &mut errors,
+                        &mut { &control },
+                    )
+                {
+                    continue;
+                }
+            }
+            let admission = if job.pending_retry.is_some() {
+                actual_policy
+            } else {
+                admission
+            };
             let Some(reservation) = reserve(
                 used,
                 job.batch.encoded_len(),
-                policy.max_attempts,
-                policy.max_bytes,
+                admission.max_attempts,
+                admission.max_bytes,
             ) else {
-                stops.insert(if used.attempts == policy.max_attempts {
+                stops.insert(if used.attempts >= admission.max_attempts {
                     "attempt_limit"
                 } else {
                     "request_byte_limit"
@@ -615,7 +694,7 @@ async fn execute_with_policy(
                 if matches!(job.purpose, Purpose::Route(_)) {
                     routes_pending -= 1;
                 }
-                if job.retried {
+                if job.pending_retry.is_some() {
                     errors.push(SearchError {
                         code: "retry_budget",
                         status: None,
@@ -624,9 +703,17 @@ async fn execute_with_policy(
                 continue;
             };
             used = reservation;
-            retries += usize::from(job.retried);
-            if let Purpose::Source(indices) = &job.purpose {
-                sent.extend(indices.iter().copied());
+            related_sent |= matches!(job.purpose, Purpose::Related { .. });
+            retries += usize::from(job.pending_retry.is_some());
+            match &job.purpose {
+                Purpose::Source(indices)
+                | Purpose::Related {
+                    targets: indices, ..
+                } => {
+                    selected.extend(indices.iter().copied());
+                    sent.extend(indices.iter().copied());
+                }
+                Purpose::Route(_) => {}
             }
             let provider = provider.clone();
             let attempt_deadline =
@@ -643,6 +730,43 @@ async fn execute_with_policy(
             });
         }
         if tasks.is_empty() && queue.is_empty() && source_exhausted {
+            if phase == Phase::Initial && !options.thorough {
+                phase = Phase::Related;
+                initial_state = Some((probabilities.clone(), fresh.clone()));
+                let donors: BTreeSet<_> = probabilities
+                    .iter()
+                    .filter_map(|(&index, probability): (&usize, &Option<f64>)| {
+                        probability
+                            .filter(|&p| p >= options.threshold)
+                            .map(|_| prepared.windows[index].file)
+                    })
+                    .collect();
+                for file in donors {
+                    related::recheck(
+                        &mut prepared,
+                        file,
+                        &mut fresh,
+                        &mut changed_files,
+                        &mut errors,
+                        &mut { &control },
+                    );
+                }
+                let (related_jobs, stop) = related::plan(
+                    &prepared,
+                    &query,
+                    &probabilities,
+                    &fresh,
+                    options.threshold,
+                    used,
+                    policy,
+                    &mut { &control },
+                );
+                queue = related_jobs;
+                if let Some(stop) = stop {
+                    stops.insert(stop);
+                }
+                continue;
+            }
             break;
         }
         let wake = if tasks.len() < CONCURRENCY {
@@ -660,18 +784,30 @@ async fn execute_with_policy(
                     errors.push(SearchError { code: "coordinator_task", status: None });
                     continue;
                 };
-                if matches!(job.purpose, Purpose::Route(_)) { routes_pending -= 1; }
+                if control() != Control::Continue {
+                    if let Some(error) = outcome.stopped_error() { errors.push(error); }
+                    continue;
+                }
                 match outcome {
                     Attempt::Response(Ok(judgments)) => {
+                        if let Some(index) = job.pending_retry { pending_errors[index] = None; }
                         if let Purpose::Route(ids) = &job.purpose {
+                            routes_pending -= 1;
                             frontier.observe(ids, &judgments);
                             if judgments.iter().any(|judgment| judgment.probability.is_none()) {
                                 errors.push(SearchError { code: "provider_refusal", status: None });
                             }
                             continue;
                         }
+                        if matches!(job.purpose, Purpose::Source(_)) && judgments.iter().any(|judgment| judgment.probability.is_none()) {
+                            errors.push(SearchError { code: "provider_refusal", status: None });
+                        }
                         for judgment in judgments {
                             let index = judgment.name.strip_prefix('w').and_then(|name| name.parse::<usize>().ok()).expect("provider validates batch names");
+                            if matches!(job.purpose, Purpose::Related { .. }) && judgment.probability.is_none() {
+                                errors.push(SearchError { code: "provider_refusal", status: None });
+                                continue;
+                            }
                             probabilities.insert(index, judgment.probability);
                             let file = prepared.windows[index].file;
                             if judgment.probability.is_some_and(|p| p >= options.threshold) && checked.insert(file) {
@@ -690,20 +826,57 @@ async fn execute_with_policy(
                             Attempt::Response(Ok(_)) => unreachable!(),
                         };
                         let retry_at = tokio::time::Instant::now().checked_add(delay);
-                        if matches!(job.purpose, Purpose::Source(_)) && retryable && !job.retried && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
-                            job.retried = true;
+                        if retryable && job.pending_retry.is_none() && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
+                            job.pending_retry = Some(pending_errors.len());
+                            pending_errors.push(Some(SearchError { code, status }));
                             job.ready = retry_at.expect("retry delay checked");
                             queue.push_back(job);
                             queue.make_contiguous().sort_by_key(|job| job.ready);
-                        } else { errors.push(SearchError { code, status }); }
+                        } else {
+                            if let Some(index) = job.pending_retry { pending_errors[index] = None; }
+                            if matches!(job.purpose, Purpose::Route(_)) { routes_pending -= 1; }
+                            errors.push(SearchError { code, status });
+                        }
                     }
                 }
             }
             _ = tokio::time::sleep_until(poll) => {}
         }
     }
+    errors.extend(pending_errors.into_iter().flatten());
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+    if related_sent {
+        let accepted_files: BTreeSet<_> = probabilities
+            .iter()
+            .filter_map(|(&index, probability)| {
+                probability
+                    .filter(|&p| p >= options.threshold)
+                    .map(|_| prepared.windows[index].file)
+            })
+            .collect();
+        for file in accepted_files {
+            if control() != Control::Continue {
+                break;
+            }
+            if fresh.contains(&file) {
+                related::recheck(
+                    &mut prepared,
+                    file,
+                    &mut fresh,
+                    &mut changed_files,
+                    &mut errors,
+                    &mut { &control },
+                );
+            }
+        }
+    }
+    if control() != Control::Continue
+        && let Some((initial_probabilities, initial_fresh)) = initial_state
+    {
+        probabilities = initial_probabilities;
+        fresh.retain(|file| initial_fresh.contains(file));
+    }
     let raw_judgments = probabilities
         .iter()
         .map(|(&index, &probability)| {
@@ -730,6 +903,7 @@ async fn execute_with_policy(
         })
         .collect();
     changed_files.sort();
+    changed_files.dedup();
     let mut results = merge(&prepared, &accepted, &fresh);
     results.sort_by(|a, b| {
         b.probability
@@ -762,12 +936,6 @@ async fn execute_with_policy(
         .filter(|value| value.is_some())
         .count();
     let refused = probabilities.len() - judged;
-    if refused > 0 {
-        errors.push(SearchError {
-            code: "provider_refusal",
-            status: None,
-        });
-    }
     if control() == Control::Cancel {
         interrupted = true;
         stops.insert("cancelled");
@@ -813,9 +981,9 @@ async fn execute_with_policy(
         coverage,
         budgets: Budgets {
             attempts: used.attempts,
-            max_attempts: policy.max_attempts,
+            max_attempts: actual_policy.max_attempts,
             encoded_request_bytes: used.bytes,
-            max_encoded_request_bytes: policy.max_bytes,
+            max_encoded_request_bytes: actual_policy.max_bytes,
             retries,
             max_concurrent_requests: CONCURRENCY,
             elapsed_ms: started.elapsed().as_millis(),

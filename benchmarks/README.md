@@ -1,6 +1,6 @@
 # Benchmarks
 
-[2026-10-07 results](2026-10-07.md) record the current retrieval limits and experiment history. Region previews improved calibration completeness from 4/12 to 7/12 in two runs, with no additional negative-source cases or errors. Fresh validation remains outstanding.
+[2026-10-07 results](2026-10-07.md) record the current retrieval limits and experiment history. Region previews and bounded follow-up search improved calibration completeness from 4/12 to 10/12. The final candidate repeated at 10/12, with no additional negative-source cases or errors and a median of sixteen requests instead of eight. Fresh validation remains outstanding.
 
 ## Read the metrics
 

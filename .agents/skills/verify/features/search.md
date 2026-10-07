@@ -10,7 +10,7 @@ Set `OPENAI_API_KEY` in the environment. Run `blink search "where are failed req
 
 ## Driving it with the CLI
 
-Run `scripts/verify --output /tmp/blink-proof`. `search-missing-key.status` must be 2. `search-empty.status` must be 1 with complete coverage and zero attempts. Invalid options and missing roots must exit 2. `search-loopback-tests.stdout` must report passing integration tests for the actual coordinator and HTTP boundary.
+Run `scripts/verify --output /tmp/blink-proof`. `search-missing-key.status` must be 2. `search-empty.status` must be 1 with complete coverage and zero attempts. Invalid options and missing roots must exit 2. `search-loopback-tests.stdout` must report passing integration tests for the actual coordinator and HTTP boundary. The tests cover initial and follow-up admission, donor and result freshness, late retries within the shared ledger, and observed errors retained when work is cancelled.
 
 For live verification, create a temporary directory containing only synthetic source. Search it with the real credential supplied through the environment. Preserve the JSON, stderr, status, request count, and source hash. Remove only the fixture. A provider error leaves live verification unverified. A live synthetic result proves that case, not held-out retrieval quality.
 
