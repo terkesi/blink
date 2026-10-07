@@ -120,4 +120,4 @@ scripts/verify --output /tmp/blink-proof
 
 The executable Python helper builds the binary, creates isolated synthetic source, drives all commands, checks source fingerprints, and removes its fixture. It preserves stdout, stderr, exit statuses, and the cleanup result in the selected evidence directory. That directory must be absent or empty. The [verification skill](.agents/skills/verify/SKILL.md) documents the full drive and [feature map](.agents/skills/verify/features/README.md).
 
-See [verification.md](docs/verification.md) for evaluation, preparation benchmarks, arithmetic proofs, fuzzing, and native build checks. Optional [development memory](docs/development-memory.md) records decisions and evidence in a separate local repository.
+See [verification.md](docs/verification.md) for evaluation, preparation benchmarks, arithmetic proofs, fuzzing, and native build checks. Measured results and rejected experiments are recorded in [benchmarks](benchmarks/README.md). Optional [development memory](docs/development-memory.md) records decisions and evidence in a separate local repository.
