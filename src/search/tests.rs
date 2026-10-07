@@ -852,7 +852,7 @@ async fn deadline_retains_exact_source_verified_when_an_early_batch_completes() 
         &root,
         &server,
         Options {
-            timeout: Duration::from_millis(100),
+            timeout: Duration::from_secs(2),
             ..Options::default()
         },
     )
@@ -860,6 +860,7 @@ async fn deadline_retains_exact_source_verified_when_an_early_batch_completes() 
     assert_eq!(report.exit_code(), 3);
     assert_eq!(report.operation, Operation::Incomplete);
     assert!(report.budgets.stops.contains(&"deadline"));
+    assert!(report.budgets.elapsed_ms < 10_000);
     assert_eq!(report.coverage.windows_judged, 8);
     assert_eq!(report.coverage.windows_unjudged, 8);
     assert_eq!(report.results.len(), 8);
@@ -876,7 +877,10 @@ async fn deadline_retains_exact_source_verified_when_an_early_batch_completes() 
         assert_eq!(result.end_byte, source.len());
         assert_eq!(result.start_line, 1);
         assert_eq!(result.end_line, 1);
-        assert_eq!(result.sha256.len(), 64);
+        assert_eq!(
+            result.sha256,
+            format!("{:x}", Sha256::digest(source.as_bytes()))
+        );
     }
     assert_eq!(
         report.coverage.source.bytes_read,
