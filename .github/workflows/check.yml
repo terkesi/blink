@@ -1,0 +1,72 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      BLINK_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check native toolchain
+        run: |
+          rustup show active-toolchain
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$BLINK_TARGET"
+      - name: Check source
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          cargo build --locked --examples
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          python3 -m unittest discover -s tests/eval
+          scripts/check-eval-corpus
+          python3 tests/eval/generate_competition.py --output "$RUNNER_TEMP/blink-eval"
+          scripts/check-eval-corpus --competition --corpus "$RUNNER_TEMP/blink-eval/corpus.json" --prepare target/debug/examples/prepare
+      - name: Drive CLI
+        run: scripts/verify --output artifacts/verification
+      - name: Build native binary
+        run: |
+          cargo build --locked --release
+          target/release/blink version --json
+          mkdir dist
+          tar -C target/release -czf "dist/blink-$BLINK_TARGET.tar.gz" blink
+          python3 -c 'import hashlib, pathlib; p = next(pathlib.Path("dist").glob("*.tar.gz")); p.with_suffix(p.suffix + ".sha256").write_text(hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n")'
+      - name: Preserve binaries and verification
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: blink-${{ matrix.target }}
+          path: |
+            dist/
+            artifacts/verification/
+          if-no-files-found: error
+          retention-days: 14

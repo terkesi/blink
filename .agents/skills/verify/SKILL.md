@@ -35,4 +35,6 @@ The helper removes only its own fixture directory in a `finally` block. It start
 
 ## Helpers
 
+For evaluation, benchmark, proof, fuzzing, and native CI changes, run the matching commands in [the verification guide](../../../docs/verification.md). Evaluation discovery must use generated roots outside ignored source directories and the real preparation example. Keep live relevance evidence separate from offline receipts.
+
 `scripts/verify` requires Python 3, Cargo, and the pinned Rust toolchain. Its `--output` option selects the evidence directory. Without it, the helper creates a unique directory under `artifacts/verification/`. Existing evidence directories must be empty. The helper never deletes earlier evidence. Use `/maintain-verification-skill` when the command map changes.

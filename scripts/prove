@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+cd "$(dirname "$0")/.."
+exec kani verification/proofs.rs --target-dir artifacts/proofs

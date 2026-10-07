@@ -1,3 +1,8 @@
 /target/
 /todo.md
 /artifacts/
+/dist/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+__pycache__/

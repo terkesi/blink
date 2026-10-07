@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Run bounded, seeded fuzz checks against production preparation and arithmetic."""
+from pathlib import Path
+import subprocess
+import tempfile
+
+
+repo = Path(__file__).resolve().parent.parent
+seeds = {
+    "ascii": b"fn value(x: u32) -> u32 { x + 1 }\n",
+    "unicode": ("fn café() { /* 水 */ }\n" * 100).encode(),
+    "long-line": ("é" * 4095 + "\n").encode(),
+    "crlf": b"let value = 1;\r\n" * 160,
+    "boundary": b"a" * 4095 + "水\n".encode(),
+    "binary": bytes(range(256)),
+}
+with tempfile.TemporaryDirectory(prefix="blink-fuzz-seeds-") as temporary:
+    root = Path(temporary)
+    for name, data in seeds.items():
+        (root / name).write_bytes(data)
+    for target in ("bounds", "prepare"):
+        command = ["cargo", "+nightly-2026-08-21", "fuzz", "run", target]
+        if target == "prepare":
+            corpus = repo / "fuzz" / "corpus" / target
+            corpus.mkdir(parents=True, exist_ok=True)
+            command.extend([str(corpus), str(root)])
+        command.extend(["--", "-runs=20000", "-max_len=8192", "-seed=20261007"])
+        subprocess.run(command, cwd=repo, check=True)

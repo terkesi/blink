@@ -1,4 +1,4 @@
-# Source retrieval corpus
+# Blink source retrieval corpus
 
 `corpus.json` contains 140 newly authored questions and exact source labels across six synthetic repositories.
 Calibration has 30 answerable questions and 10 negative questions across two repositories.
@@ -67,3 +67,37 @@ Symbol and content checks enforce mechanical split isolation. Human review must 
 No live model evaluation has run against this corpus.
 There are no measured retrieval quality scores, chosen relevance thresholds, or mocked-model recall claims.
 Use calibration only to choose a threshold. Keep held-out questions separate from tuning, and evaluate them after the threshold is fixed.
+
+## Separate competition cohort
+
+`generate_competition.py` creates four larger synthetic repositories under the explicit `--output` directory outside the source checkout.
+Each has 333 eligible files, including 320 competing implementations with behavioral near misses.
+Every file contributes at least one eligible source window, so each repository exceeds the 256-window thorough judgment budget.
+Live reports must record actual available, discovered, and judged window counts. File counts alone do not prove candidate selection quality.
+
+The cohort has 64 questions and 48 required spans.
+Each split has eight positive behaviors, four of them requiring two files, and eight negative behaviors.
+Every behavior has a neutral and a hostile source variant, giving 32 cases per split.
+The negative categories include four semantic near misses, two excluded-source sentinels, and two attack-bearing negatives per variant.
+The source variants have identical implementation bytes except for one instruction-bearing string literal.
+That literal is untrusted source data.
+
+Calibration covers packing, booking intervals, rolling rainfall, stock consumption, route costs, cutting allowance, charging efficiency, and mail sorting.
+Held-out covers escaped record parsing, recursive ancestry, interval merging, event reduction, optical exposure, term normalization, convolution, and a checksum transition.
+Held-out evidence is dispersed in deeper paths and starts after large source tables.
+The generator executes authored input/output probes and verifies that each competing algorithm differs from its target on a defining behavior.
+The validator regenerates the specification independently and compares every source byte and label.
+
+```sh
+python3 tests/eval/generate_competition.py --output /tmp/blink-eval
+scripts/check-eval-corpus --competition --corpus /tmp/blink-eval/corpus.json
+python3 -m unittest discover -s tests/eval -p 'test_*.py'
+```
+
+[The scorer reference](scorer.md) defines receipts, metrics, calibration artifacts, and release-gate eligibility.
+The paired cases measure attack exposure, output changes, irrelevant results, and false positives.
+They do not prove instruction resistance until real judgments expose both variants.
+
+The larger cohort still uses generated families of related distractors. It does not represent 320 independent real-world concepts.
+Its authored probes prove fixture behavior, not human semantic review of every label.
+No model has evaluated either cohort, and no production quality gate has passed.

@@ -1,0 +1,50 @@
+name: Proofs and fuzzing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: proofs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bounds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install verification tools
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+          cargo install --locked cargo-fuzz --version 0.13.2
+          rustup toolchain install nightly-2026-08-21 --profile minimal --component rust-src
+      - name: Prove arithmetic bounds
+        run: |
+          mkdir -p artifacts
+          scripts/prove 2>&1 | tee artifacts/proofs.log
+      - name: Fuzz production preparation and bounds
+        run: |
+          scripts/fuzz 2>&1 | tee artifacts/fuzz.log
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arithmetic-and-fuzz-evidence
+          path: |
+            artifacts/*.log
+            fuzz/artifacts/
+          if-no-files-found: warn
+          retention-days: 14

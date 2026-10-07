@@ -1,0 +1,30 @@
+[package]
+name = "blink-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+blink = { path = ".." }
+libfuzzer-sys = "0.4"
+tempfile = "3"
+
+[[bin]]
+name = "prepare"
+path = "fuzz_targets/prepare.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bounds"
+path = "fuzz_targets/bounds.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

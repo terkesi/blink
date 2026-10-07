@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Run one synthetic evaluation split through the actual Decisions search pipeline."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import runpy
+import subprocess
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--corpus", type=Path, required=True)
+    parser.add_argument("--split", choices=("calibration", "heldout"), required=True)
+    parser.add_argument("--mode", choices=("default", "thorough"), default="default")
+    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--frozen", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        parser.error("OPENAI_API_KEY is required")
+    if args.split == "heldout" and not args.frozen:
+        parser.error("heldout runs require a frozen calibration artifact")
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        parser.error("output must be empty to preserve previous evidence")
+    repo = Path(__file__).resolve().parent.parent
+    scorer = runpy.run_path(str(repo / "scripts" / "score-eval"))
+    corpus_path = args.corpus.resolve(strict=True)
+    corpus = json.loads(corpus_path.read_text())
+    sources = scorer["load_sources"](corpus_path, corpus)
+    scorer["validate_labels"](corpus, sources)
+    frozen = json.loads(args.frozen.read_text()) if args.frozen else None
+    threshold = frozen["threshold"] if frozen else args.threshold
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=repo):
+        parser.error("commit the evaluated code first so receipts identify its exact revision")
+    if frozen:
+        if frozen["mode"] != args.mode or frozen["provenance"]["code_revision"] != revision:
+            parser.error("frozen calibration mode or revision differs from this run")
+        if frozen["calibration_fingerprint"] != scorer["fingerprint"](corpus, sources, "calibration"):
+            parser.error("calibration source or labels changed after freezing")
+    build = subprocess.run(["cargo", "build", "--locked", "--release", "--example", "evaluate_case", "--message-format=json"], cwd=repo, capture_output=True, check=False)
+    (output / "build.stdout").write_bytes(build.stdout)
+    (output / "build.stderr").write_bytes(build.stderr)
+    if build.returncode:
+        raise RuntimeError("evaluation example build failed; inspect build.stderr")
+    events = [json.loads(line) for line in build.stdout.splitlines()]
+    binary = next(event["executable"] for event in events if event.get("executable") and event.get("target", {}).get("name") == "evaluate_case")
+    repositories = {repository["id"]: repository for repository in corpus["repositories"]}
+    run = {
+        "schema_version": 1, "split": args.split, "mode": args.mode, "threshold": threshold,
+        "frozen_threshold_sha256": scorer["sha"](scorer["canonical"](frozen)) if frozen else None,
+        "provenance": {"kind": "live", "provider": "openai", "model": "gpt-6-luna", "code_revision": revision, "captured_at": datetime.now(timezone.utc).isoformat()},
+        "cases": [],
+    }
+    for index, question in enumerate(q for q in corpus["questions"] if q["split"] == args.split):
+        root = (corpus_path.parent / repositories[question["repository"]]["root"]).resolve()
+        request = {"id": question["id"], "root": str(root), "query": question["query"], "mode": args.mode, "threshold": threshold}
+        child = subprocess.run([binary], input=json.dumps(request).encode(), capture_output=True, timeout=90, check=False)
+        (output / f"case-{index:03}.stderr").write_bytes(child.stderr)
+        if child.returncode:
+            raise RuntimeError(f"case {index} failed before a receipt; inspect its stderr")
+        receipt = json.loads(child.stdout)
+        (output / f"case-{index:03}.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        coverage = receipt["coverage"]["source"]
+        if not coverage["complete"] or coverage["files_included"] != len(repositories[question["repository"]]["source_files"]):
+            raise RuntimeError("source coverage differs from the corpus; check ancestor ignore rules and source limits")
+        if any(error.get("status") in (401, 403) for error in receipt["errors"]):
+            (output / "blocked.json").write_text(json.dumps({"verified": False, "case": question["id"], "errors": receipt["errors"]}, indent=2) + "\n")
+            print("Evaluation blocked by provider access; no quality receipt produced.")
+            return 3
+        run["cases"].append(receipt)
+    if not any(case["judgments"] for case in run["cases"]):
+        (output / "blocked.json").write_text(json.dumps({"verified": False, "reason": "no model judgments received"}) + "\n")
+        return 3
+    report = scorer["score"](corpus, sources, run, frozen)
+    (output / "run.json").write_text(json.dumps(run, indent=2) + "\n")
+    (output / "score.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({"evidence": str(output), "gate": report["gate"]}, sort_keys=True))
+    return 0 if args.split == "calibration" or report["gate"]["pass_quality"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

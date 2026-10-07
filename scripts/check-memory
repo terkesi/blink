@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Check optional development memory without executing or changing its notes."""
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+def git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=False)
+
+
+def check(path, project):
+    root = path.resolve(strict=True)
+    if git("rev-parse", "--show-toplevel", cwd=root).stdout.strip() != str(root):
+        raise ValueError("memory must be the root of a separate Git worktree")
+    memory_git = git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root)
+    project_git = git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=project)
+    if memory_git.returncode or project_git.returncode:
+        raise ValueError("cannot identify memory and project repositories")
+    if Path(memory_git.stdout.strip()).resolve() == Path(project_git.stdout.strip()).resolve():
+        raise ValueError("memory must use a separate Git repository")
+    status = git("status", "--porcelain", "--untracked-files=all", cwd=root)
+    if status.returncode:
+        raise ValueError("cannot read memory worktree status")
+    if status.stdout:
+        raise ValueError("memory has uncommitted changes; reconcile them before writing notes")
+    index = root / "MEMORY.md"
+    pending = [index]
+    checked = set()
+    while pending:
+        note = pending.pop().resolve(strict=True)
+        if not note.is_relative_to(root) or note.suffix != ".md":
+            raise ValueError("memory links must resolve to Markdown files inside the worktree")
+        if git("--literal-pathspecs", "ls-files", "--error-unmatch", "--", str(note.relative_to(root)), cwd=root).returncode:
+            raise ValueError("linked notes must be tracked in memory")
+        if note in checked:
+            continue
+        checked.add(note)
+        text = note.read_text(encoding="utf-8")
+        for link in re.findall(r"\[\[([^\]]+)\]\]", text):
+            target = link.split("|", 1)[0].split("#", 1)[0]
+            if not target:
+                continue
+            pending.append(root / (target if target.endswith(".md") else target + ".md"))
+    return {"configured": True, "clean": True, "notes_checked": len(checked)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--path", type=Path, help="Check a specific memory worktree")
+    args = parser.parse_args()
+    repo = Path(__file__).resolve().parent.parent
+    path = args.path
+    if path is None:
+        configured = git("config", "--path", "--get", "blink.memoryDir", cwd=repo)
+        if configured.returncode == 1:
+            print(json.dumps({"configured": False}))
+            return 0
+        if configured.returncode != 0:
+            parser.error("cannot read blink.memoryDir")
+        path = Path(configured.stdout.strip())
+        if not path.is_absolute():
+            path = repo / path
+    try:
+        print(json.dumps(check(path, repo), sort_keys=True))
+    except (OSError, ValueError) as error:
+        print("memory check failed: " + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
