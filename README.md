@@ -54,7 +54,9 @@ JSON schema version 1 includes `results`, `operation`, `coverage`, `budgets`, `e
 
 `coverage.complete` requires full enumeration, complete planning, and a valid judgment for every eligible window. A bounded search can return useful results with incomplete coverage. Check coverage separately from `operation`. Refusals count as unjudged. Output limits keep whole records and report omissions.
 
-The relevance threshold remains provisional at 0.5. At `2560970`, two independently authored synthetic holdouts returned every required source span for 6 of 12 and 16 of 18 positive questions. Queries for absent behavior returned source in 0 of 12 and 5 of 18 cases. Some of those excerpts were tests that contradicted the requested behavior. Returned source still needs interpretation, and these small suites do not establish accuracy on production repositories. See the [verification guide](docs/verification.md) to run the evaluation.
+The relevance threshold remains provisional at 0.5. At `2560970`, two independently authored synthetic holdouts returned every required source span for 6 of 12 and 16 of 18 positive questions. Queries for absent behavior returned source in 0 of 12 and 5 of 18 cases. Some of those excerpts were tests that contradicted the requested behavior.
+
+A subsequent evaluation of three public repositories exposed a larger gap. With the same production source at `afe8d19`, default search returned every required span without execution errors for 5 of 30 positive questions. It returned source for none of 15 absent-behavior questions. Three of the 45 searches had execution errors, and all reported incomplete coverage. These are single trials per question, not an estimate of general accuracy. Narrow the search root when possible, inspect returned source, and use other search methods when coverage is incomplete. See the [verification guide](docs/verification.md) for metric definitions and evaluation commands.
 
 ## Inventory policy
 
