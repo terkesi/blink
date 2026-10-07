@@ -508,16 +508,24 @@ async fn global_deadline_aborts_requests_and_cancellation_returns_130() {
         &root,
         &server,
         Options {
-            timeout: Duration::from_millis(50),
+            timeout: Duration::from_secs(1),
             ..Options::default()
         },
     )
     .await;
     assert_eq!(report.exit_code(), 3);
     assert!(report.budgets.stops.contains(&"deadline"));
-    assert!(report.budgets.elapsed_ms < 500);
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(server.disconnected.load(Ordering::SeqCst), 3);
+    assert!(report.budgets.elapsed_ms < 3000);
+    assert_eq!(server.bodies().len(), 3);
+    assert_eq!(report.coverage.windows_judged, 0);
+    assert!(report.results.is_empty());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.disconnected.load(Ordering::SeqCst) != 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("all admitted requests disconnect after the deadline");
     let cancelled = Arc::new(AtomicBool::new(false));
     let toggle = Arc::clone(&cancelled);
     tokio::spawn(async move {
