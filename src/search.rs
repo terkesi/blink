@@ -584,7 +584,7 @@ async fn execute_with_policy(
     let mut initial_state = None;
     let mut related_sent = false;
     let mut callee_queue = VecDeque::new();
-    let mut refused_queue = VecDeque::new();
+    let mut refused_queue: VecDeque<Job> = VecDeque::new();
     let started = Instant::now();
     let deadline = started + options.timeout;
     let control = || {
@@ -761,7 +761,21 @@ async fn execute_with_policy(
         }
         if tasks.is_empty() && queue.is_empty() && source_exhausted {
             if !refused_queue.is_empty() {
-                queue = std::mem::take(&mut refused_queue);
+                let mut retries = std::mem::take(&mut refused_queue);
+                if tokio::time::Instant::now() + policy.attempt_timeout
+                    > tokio::time::Instant::from_std(deadline)
+                {
+                    retries.clear();
+                }
+                retries.retain(|job| match job.purpose {
+                    Purpose::Related { donor, .. } => probabilities
+                        .get(&donor)
+                        .copied()
+                        .flatten()
+                        .is_some_and(|p| p >= options.threshold),
+                    _ => true,
+                });
+                queue = retries;
                 continue;
             }
             if phase == Phase::Initial && !options.thorough {
@@ -844,7 +858,12 @@ async fn execute_with_policy(
                     continue;
                 };
                 if control() != Control::Continue {
-                    if let Some(error) = outcome.stopped_error() { errors.push(error); }
+                    let refusal_only = matches!(&outcome, Attempt::Response(Ok(_)));
+                    if let Some(error) = outcome.stopped_error()
+                        && (!refusal_only || matches!(job.purpose, Purpose::Route(_)))
+                    {
+                        errors.push(error);
+                    }
                     continue;
                 }
                 match outcome {
@@ -880,7 +899,12 @@ async fn execute_with_policy(
                                 }
                             }
                         }
-                        for index in refused {
+                        let asked_alone = match &job.purpose {
+                            Purpose::Related { targets, .. } => targets.len() == 1,
+                            Purpose::Source(indices) => indices.len() == 1,
+                            _ => true,
+                        };
+                        for index in refused.into_iter().filter(|_| !asked_alone) {
                             let name = format!("w{index}");
                             let window = candidate(&prepared, index, &name);
                             let (batch, purpose) = match &job.purpose {
@@ -923,6 +947,9 @@ async fn execute_with_policy(
                             Attempt::Response(Ok(_)) => unreachable!(),
                         };
                         let retry_at = tokio::time::Instant::now().checked_add(delay);
+                        if job.refusal_retry {
+                            continue;
+                        }
                         if retryable && job.pending_retry.is_none() && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
                             job.pending_retry = Some(pending_errors.len());
                             pending_errors.push(Some(SearchError { code, status }));

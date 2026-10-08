@@ -586,10 +586,7 @@ async fn changed_source_is_omitted_and_refusal_is_unjudged() {
     assert_eq!(report.operation, Operation::Completed);
     assert_eq!(report.coverage.windows_refused, 1);
     assert_eq!(report.coverage.windows_judged, 0);
-    let bodies = server.bodies();
-    assert_eq!(bodies.len(), 2);
-    let retry: Value = serde_json::from_slice(&bodies[1]).unwrap();
-    assert_eq!(retry["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(server.bodies().len(), 1);
 }
 
 #[tokio::test]
@@ -1470,6 +1467,12 @@ fn related_fixture() -> TempDir {
     fs::write(root.path().join("b.rs"), "fn distinctive_helper() {}\n").unwrap();
     root
 }
+
+fn related_fixture_two_targets() -> TempDir {
+    let root = related_fixture();
+    fs::write(root.path().join("c.rs"), "distinctive_helper other_name\n").unwrap();
+    root
+}
 fn has_context(request: &Value) -> bool {
     request["questions"][0]["instructions"]
         .as_str()
@@ -1554,7 +1557,7 @@ async fn related_refusal_and_error_retain_prior_probability_and_expose_failure()
             reply
         })
         .await;
-        let report = run(&related_fixture(), &server, Options::default()).await;
+        let report = run(&related_fixture_two_targets(), &server, Options::default()).await;
         assert_eq!(
             report
                 .raw_judgments
@@ -2562,7 +2565,7 @@ async fn callee_jobs_skip_donors_retracted_by_shared_word_jobs() {
 }
 
 #[tokio::test]
-async fn refusal_retry_uses_headroom_instead_of_fresh_slots() {
+async fn refusal_retry_waits_for_fresh_work_and_counts_as_a_retry() {
     let server = Server::new(|request, _| {
         let mut reply = Reply::scores(request, 0.9);
         if !has_context(request) && request["questions"].as_array().unwrap().len() > 1 {
@@ -2596,4 +2599,121 @@ async fn refusal_retry_uses_headroom_instead_of_fresh_slots() {
     assert_eq!(report.budgets.retries, 1);
     assert!(report.errors.is_empty());
     assert_eq!(report.coverage.windows_refused, 0);
+}
+
+#[tokio::test]
+async fn late_refusal_retry_is_dropped_instead_of_risking_the_deadline() {
+    let server = Server::new(|request, _| {
+        if !has_context(request) {
+            return initial_related_scores(request, 0.1);
+        }
+        let mut reply = Reply::scores(request, 0.9);
+        if request["questions"].as_array().unwrap().len() == 1 {
+            reply.delay = Duration::from_secs(3);
+            return reply;
+        }
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["name"] == "w2" {
+                *answer = json!({"type": "refusal", "name": "w2", "reason": "safe refusal"});
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(
+        &related_fixture_two_targets(),
+        &server,
+        Options {
+            timeout: Duration::from_secs(2),
+            ..Options::default()
+        },
+    )
+    .await;
+    assert!(!report.budgets.stops.contains(&"deadline"));
+    assert!(report.errors.is_empty());
+    assert!(report.results.iter().any(|record| record.path == "b.rs"));
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|j| j.name == "w1")
+            .unwrap()
+            .probability,
+        Some(0.9)
+    );
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|j| j.name == "w2")
+            .unwrap()
+            .probability,
+        Some(0.1)
+    );
+    assert!(server.bodies().iter().all(|body| {
+        let request: Value = serde_json::from_slice(body).unwrap();
+        !has_context(&request) || request["questions"].as_array().unwrap().len() == 2
+    }));
+}
+
+#[tokio::test]
+async fn failed_refusal_retry_is_best_effort() {
+    let server = Server::new(|request, _| {
+        if request["questions"].as_array().unwrap().len() == 1 {
+            return Reply::status(503);
+        }
+        let mut reply = Reply::scores(request, 0.9);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["name"] == "w1" {
+                *answer = json!({"type": "refusal", "name": "w1", "reason": "safe refusal"});
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&fixture(2), &server, Options::default()).await;
+    assert!(report.errors.is_empty());
+    assert_eq!(report.operation, Operation::Completed);
+    assert_eq!(report.coverage.windows_refused, 1);
+    assert_eq!(report.budgets.retries, 1);
+    assert_eq!(server.bodies().len(), 2);
+}
+
+#[tokio::test]
+async fn refusal_retry_skips_a_donor_the_follow_up_rejected() {
+    let server = Server::new(|request, _| {
+        if !has_context(request) {
+            let mut reply = Reply::scores(request, 0.1);
+            for answer in reply.body["answers"].as_array_mut().unwrap() {
+                if answer["name"] == "w0" || answer["name"] == "w3" {
+                    answer["probability"] = json!(0.9);
+                }
+            }
+            return reply;
+        }
+        let mut reply = Reply::scores(request, 0.1);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["name"] == "w2" {
+                *answer = json!({"type": "refusal", "name": "w2", "reason": "safe refusal"});
+            }
+        }
+        reply
+    })
+    .await;
+    let root = related_fixture_two_targets();
+    fs::write(root.path().join("d.rs"), "fn caller_two() { caller(); }\n").unwrap();
+    let report = run(&root, &server, Options::default()).await;
+    assert!(report.errors.is_empty());
+    assert_eq!(
+        report
+            .judgment_events
+            .iter()
+            .filter(|e| e.name == "w2" && e.donor.is_some())
+            .count(),
+        1
+    );
+    assert!(server.bodies().iter().all(|body| {
+        let request: Value = serde_json::from_slice(body).unwrap();
+        question_names(&request) != ["w2"]
+    }));
 }
