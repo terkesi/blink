@@ -20,6 +20,7 @@ def load_trials(directories):
         for path in sorted(Path(directory).glob('*/trial.json')):
             trial = json.loads(path.read_text())
             trial['_source_dir'] = str(directory)
+            trial['_label'] = f"{Path(directory).name}:{trial['tool']}"
             trials.append(trial)
     return trials
 
@@ -31,20 +32,21 @@ def median(values):
 
 def per_tool(trials):
     groups = defaultdict(list)
+    single = len({trial['_source_dir'] for trial in trials}) == 1
     for trial in trials:
-        groups[(trial['tool'], trial['mode'])].append(trial)
+        groups[(trial['tool'] if single else trial['_label'], trial['mode'])].append(trial)
     report = {}
     for (tool, mode), rows in sorted(groups.items()):
         positives = [r for r in rows if r['metrics']['positive']]
         negatives = [r for r in rows if not r['metrics']['positive']]
         with_leads = [r for r in positives if r['parsed'].get('leads')]
         required = sum(r['metrics']['required_spans'] for r in positives)
-        covered = sum(r['metrics']['covered_spans'] for r in positives)
+        covered = sum(r['metrics']['all_returned_covered_spans'] for r in positives if not r['metrics']['execution_or_integrity_error'])
         report[f'{tool}/{mode}'] = dict(
             trials=len(rows),
             positive_trials=len(positives),
-            complete_positives=sum(r['metrics']['strict_complete_eligible'] for r in positives),
-            strict_hits=sum(r['metrics']['strict_hit_at_8'] for r in positives),
+            complete_positives=sum(r['metrics']['error_free_all_returned_source_all_required'] for r in positives),
+            strict_hits_at_8=sum(r['metrics']['strict_hit_at_8'] for r in positives),
             span_recall=dict(covered=covered, required=required,
                              rate=(covered / required) if required else None),
             lead_inclusive_hits=dict(
@@ -73,27 +75,30 @@ def recall(trial):
     required = trial['metrics']['required_spans']
     if not required:
         return None
-    return trial['metrics']['covered_spans'] / required
+    if trial['metrics']['execution_or_integrity_error']:
+        return 0.0
+    return trial['metrics']['all_returned_covered_spans'] / required
 
 
 def paired(trials, left, right):
     pairs = defaultdict(dict)
     for trial in trials:
-        pairs[(trial['id'], trial['mode'], trial['repeat'])][trial['tool']] = trial
-    outcome = lambda t: 1 if t['metrics']['strict_hit_at_8'] else 0
-    strict = dict(wins=0, losses=0, ties=0, unpaired=0, skipped_errors=0)
-    span = dict(wins=0, losses=0, ties=0, unpaired=0, skipped_errors=0)
+        key = (trial['id'], trial['mode'], trial['repeat'])
+        for name in (trial['tool'], trial['_label']):
+            pairs[key].setdefault(name, trial)
+    outcome = lambda t: 1 if t['metrics']['error_free_all_returned_source_all_required'] else 0
+    strict = dict(wins=0, losses=0, ties=0, unpaired=0, error_pairs=0)
+    span = dict(wins=0, losses=0, ties=0, unpaired=0, error_pairs=0)
     for pair in pairs.values():
-        if left not in pair or right not in pair:
+        if left not in pair or right not in pair or pair[left] is pair[right]:
             strict['unpaired'] += 1
             continue
         a, b = pair[left], pair[right]
         if not a['metrics']['positive']:
             continue
         if a['metrics']['execution_or_integrity_error'] or b['metrics']['execution_or_integrity_error']:
-            strict['skipped_errors'] += 1
-            span['skipped_errors'] += 1
-            continue
+            strict['error_pairs'] += 1
+            span['error_pairs'] += 1
         delta = outcome(a) - outcome(b)
         strict['wins' if delta > 0 else 'losses' if delta < 0 else 'ties'] += 1
         ra, rb = recall(a), recall(b)
@@ -101,7 +106,7 @@ def paired(trials, left, right):
             delta = ra - rb
             span['wins' if delta > 0 else 'losses' if delta < 0 else 'ties'] += 1
     return dict(tools=[left, right],
-                strict_hit_at_8=dict(strict, sign_test_p=sign_test(strict['wins'], strict['losses'])),
+                complete=dict(strict, sign_test_p=sign_test(strict['wins'], strict['losses'])),
                 span_recall=dict(span, sign_test_p=sign_test(span['wins'], span['losses'])))
 
 
@@ -109,7 +114,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directories', nargs='+', type=Path)
     parser.add_argument('--tools', default='blink,jg',
-                        help='The two tools to pair, comma-separated')
+                        help='The two sides to pair, comma-separated: tool names or DIRNAME:tool labels')
     args = parser.parse_args(argv)
     trials = load_trials(args.directories)
     if not trials:

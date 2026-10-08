@@ -53,7 +53,7 @@ scripts/generate-questions --root /path/repo-a --id repo-a --root /path/repo-b -
 scripts/paired-summary /path/compare-output-a /path/compare-output-b --tools blink,jg
 ```
 
-Repository roots must sit inside the corpus file's directory so relative roots resolve. These queries are doc-derived and easier than hand-written behavioral questions; many share the files their docs describe. Use generated sets for relative comparison between tools and for regression, not for absolute quality claims or release gating. The frozen driver's `--split` flag accepts only `calibration` and `heldout`, so a `generated` split loads through `load_corpus` rather than the driver's CLI.
+Repository roots must sit inside the corpus file's directory so relative roots resolve. These queries are doc-derived and easier than hand-written behavioral questions; many share the files their docs describe. Use generated sets for relative comparison between tools and for regression, not for absolute quality claims or release gating. The 2026-10-07 frozen driver accepts only the `calibration` and `heldout` splits; the archived `compare-v4` copy adds `generated` and is otherwise identical.
 
 ## Local preparation benchmark
 

@@ -20,8 +20,8 @@ def trial(qid, tool, strict_hit, covered, required, repeat=1,
     return dict(
         id=qid, tool=tool, mode='default', repeat=repeat,
         metrics=dict(positive=True, strict_hit_at_8=strict_hit,
-                     strict_complete_eligible=strict_hit,
-                     required_spans=required, covered_spans=covered,
+                     error_free_all_returned_source_all_required=strict_hit and not error,
+                     required_spans=required, all_returned_covered_spans=covered,
                      lead_path_hit_at_8=bool(leads),
                      negative_source_false_positive=False,
                      execution_or_integrity_error=error),
@@ -34,8 +34,8 @@ def negative(qid, tool, records):
     return dict(
         id=qid, tool=tool, mode='default', repeat=1,
         metrics=dict(positive=False, strict_hit_at_8=False,
-                     strict_complete_eligible=True, required_spans=0,
-                     covered_spans=0, lead_path_hit_at_8=False,
+                     error_free_all_returned_source_all_required=False, required_spans=0,
+                     all_returned_covered_spans=0, lead_path_hit_at_8=False,
                      negative_source_false_positive=records > 0,
                      execution_or_integrity_error=False),
         parsed=dict(leads=[], requests=1, user_output_bytes=10,
@@ -81,27 +81,28 @@ class PairedSummaryTest(unittest.TestCase):
         jg = report['per_tool']['jg/default']
         self.assertEqual(jg['negative_source_records'], 1)
         pair = report['paired']
-        self.assertEqual(pair['strict_hit_at_8']['wins'], 1)
-        self.assertEqual(pair['strict_hit_at_8']['ties'], 2)
+        self.assertEqual(pair['complete']['wins'], 1)
+        self.assertEqual(pair['complete']['ties'], 2)
         self.assertEqual(pair['span_recall']['wins'], 1)
         self.assertEqual(pair['span_recall']['losses'], 1)
         self.assertEqual(pair['span_recall']['ties'], 1)
         # One win and one loss: n=2, min=1 -> p = 2 * (C(2,0)+C(2,1))/4 = 1.0.
         self.assertEqual(pair['span_recall']['sign_test_p'], 1.0)
         # Strict: one win, zero losses -> p = 2 * 1/2 = 1.0.
-        self.assertEqual(pair['strict_hit_at_8']['sign_test_p'], 1.0)
+        self.assertEqual(pair['complete']['sign_test_p'], 1.0)
 
-    def test_error_trials_skipped_in_pairs(self):
+    def test_error_trials_count_as_losses_in_pairs(self):
         self.write('01-b', trial('q1', 'blink', True, 1, 1, error=True))
         self.write('01-j', trial('q1', 'jg', False, 0, 1))
         self.write('02-b', trial('q2', 'blink', False, 0, 1))
         self.write('02-j', trial('q2', 'jg', True, 1, 1))
         report = self.run_summary()
         self.assertEqual(report['per_tool']['blink/default']['error_trials'], 1)
-        pair = report['paired']['strict_hit_at_8']
-        self.assertEqual(pair['skipped_errors'], 1)
-        self.assertEqual(pair['losses'], 1)
-        # Single decisive pair: p = 2 * C(1,0)/2 = 1.0.
+        pair = report['paired']['complete']
+        self.assertEqual(pair['error_pairs'], 1)
+        # q1: blink errored (no credit) against a jg miss: tie. q2: loss.
+        self.assertEqual((pair['wins'], pair['losses'], pair['ties']), (0, 1, 1))
+        self.assertEqual(report['paired']['span_recall']['losses'], 1)
         self.assertEqual(pair['sign_test_p'], 1.0)
 
 
