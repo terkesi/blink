@@ -1,6 +1,6 @@
 # Benchmarks
 
-[2026-10-08 results](2026-10-08.md) report the first fresh head-to-head comparison. The retained version completed 6 of 11 held-out positive questions and the Reference CLI completed 8, so Blink has not qualified for team release. Bounded callee requests raised calibration from 10/12 to 11/12 in two runs at a median of 17.5 to 18 requests. [2026-10-07 results](2026-10-07.md) record the earlier experiment history.
+[2026-10-08 results](2026-10-08.md) report the first fresh head-to-head comparison and the first generated-set comparison. On 11 held-out hand-written questions Blink completed 6 and the Reference CLI 8; on 120 generated questions Blink completed 98 and the Reference CLI 103 (paired p 0.44) at a third of the requests and 7.6 times lower median wall time. Blink has not qualified for team release. Bounded callee requests raised calibration from 10/12 to 11/12, and provider refusals no longer fail a search. [2026-10-07 results](2026-10-07.md) record the earlier experiment history.
 
 ## Read the metrics
 
