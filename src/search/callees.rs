@@ -41,19 +41,25 @@ fn declaration(line: &str) -> Option<&str> {
             } else {
                 tail.trim_start()
             };
-            let (name, after) = word(tail);
+            let (name, after) = match word(tail) {
+                ("mut", after) if keyword == "let" => word(after.trim_start()),
+                pair => pair,
+            };
             let value = listed("let const var", keyword)
                 && !after.split_once('=').is_some_and(|(_, init)| {
-                    let init = init.trim_start();
+                    let (start, rest) = word(init.trim_start());
                     init.contains("=>")
-                        || ["|", "function", "async"]
-                            .iter()
-                            .any(|start| init.starts_with(start))
+                        || init.trim_start().starts_with('|')
+                        || start == "function"
+                        || start == "async" && !rest.starts_with('(')
                 });
             return Some(name).filter(|name| !name.is_empty() && !value);
         } else {
-            return (modified && !keyword.is_empty() && tail.trim_start().starts_with('('))
-                .then_some(keyword);
+            return (modified
+                && !declares
+                && !keyword.is_empty()
+                && tail.trim_start().starts_with('('))
+            .then_some(keyword);
         }
     }
 }
@@ -139,12 +145,20 @@ pub(super) fn plan(
         }
         declared.push(declarations(text(index)));
     }
-    let mut sites: BTreeMap<&str, usize> = BTreeMap::new();
-    for &name in declared.iter().flatten() {
-        *sites.entry(name).or_default() += 1;
+    let mut files: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+    for (index, names) in declared.iter().enumerate() {
+        for &name in names {
+            files
+                .entry(name)
+                .or_default()
+                .insert(prepared.windows[index].file);
+        }
     }
     let mut groups: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
     for target in 0..prepared.windows.len() {
+        if control() != Control::Continue {
+            return VecDeque::new();
+        }
         if excluded.contains(&target)
             || initial
                 .get(&target)
@@ -170,7 +184,7 @@ pub(super) fn plan(
                 let count = defined
                     .iter()
                     .filter(|name| calls.contains(**name))
-                    .map(|name| sites[**name])
+                    .map(|name| files[**name].len())
                     .min()?;
                 Some((count, *p, *index))
             })
@@ -186,25 +200,36 @@ pub(super) fn plan(
         let donor_name = format!("w{donor}");
         let evidence = candidate(prepared, donor, &donor_name);
         let mut remaining = targets.as_slice();
-        while let Some((batch, count)) =
-            (1..=remaining.len().min(BATCH_SIZE))
-                .rev()
-                .find_map(|count| {
-                    let names: Vec<_> = remaining[..count]
-                        .iter()
-                        .map(|(_, index)| format!("w{index}"))
-                        .collect();
-                    let cards: Vec<_> = remaining[..count]
-                        .iter()
-                        .zip(&names)
-                        .map(|(&(_, index), name)| candidate(prepared, index, name))
-                        .collect();
-                    Batch::encode_with_context(query, &cards, &evidence)
-                        .ok()
-                        .flatten()
-                        .map(|batch| (batch, count))
-                })
-        {
+        for _ in 0..CALLEE_JOBS {
+            let Some((batch, count)) =
+                (1..=remaining.len().min(BATCH_SIZE))
+                    .rev()
+                    .find_map(|count| {
+                        let names: Vec<_> = remaining[..count]
+                            .iter()
+                            .map(|(_, index)| format!("w{index}"))
+                            .collect();
+                        let cards: Vec<_> = remaining[..count]
+                            .iter()
+                            .zip(&names)
+                            .map(|(&(_, index), name)| candidate(prepared, index, name))
+                            .collect();
+                        Batch::encode_with_context(query, &cards, &evidence)
+                            .ok()
+                            .flatten()
+                            .map(|contextual| {
+                                let batch = if INCLUDE_RELATED_EVIDENCE {
+                                    contextual
+                                } else {
+                                    Batch::encode_related_control(query, &cards)
+                                        .expect("validated candidates")
+                                };
+                                (batch, count)
+                            })
+                    })
+            else {
+                break;
+            };
             let order = (remaining[0], std::cmp::Reverse(count), donor);
             let targets = remaining[..count].iter().map(|&(_, index)| index).collect();
             jobs.push((

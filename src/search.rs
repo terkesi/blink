@@ -473,6 +473,7 @@ struct Job {
 enum Phase {
     Initial,
     Related,
+    Callee,
 }
 
 enum Attempt {
@@ -581,6 +582,7 @@ async fn execute_with_policy(
     let mut phase = Phase::Initial;
     let mut initial_state = None;
     let mut related_sent = false;
+    let mut callee_queue = VecDeque::new();
     let started = Instant::now();
     let deadline = started + options.timeout;
     let control = || {
@@ -784,7 +786,7 @@ async fn execute_with_policy(
                     policy,
                     &mut { &control },
                 );
-                let callee_jobs = callees::plan(
+                callee_queue = callees::plan(
                     &prepared,
                     &query,
                     &probabilities,
@@ -796,10 +798,23 @@ async fn execute_with_policy(
                     &mut { &control },
                 );
                 queue = related_jobs;
-                queue.extend(callee_jobs);
                 if let Some(stop) = stop {
                     stops.insert(stop);
                 }
+                continue;
+            }
+            if phase == Phase::Related
+                && !callee_queue.is_empty()
+                && tokio::time::Instant::now() + policy.attempt_timeout
+                    <= tokio::time::Instant::from_std(deadline)
+            {
+                phase = Phase::Callee;
+                initial_state = Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
+                queue = std::mem::take(&mut callee_queue);
+                queue.retain(|job| {
+                    matches!(job.purpose, Purpose::Related { donor, .. }
+                        if probabilities.get(&donor).copied().flatten().is_some_and(|p| p >= options.threshold))
+                });
                 continue;
             }
             break;

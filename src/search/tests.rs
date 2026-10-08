@@ -2009,7 +2009,8 @@ fn declarations_and_calls_follow_common_language_forms() {
          func (c *Client) Do(req *Request)\nfunc Parse(s string)\n\
          export function stripAuth(url: string)\nexport const parse = (input) =>\n  private async load(id) {\n\
          return helper(value)\ndefault:\ntype(x)\nlet Some(x) = y else { return };\nlet Point { x, y } = p;\n\
-         let len = 3;\nconst handler = async (req) => {\nlet add = |a, b| a + b;\n",
+         let len = 3;\nconst handler = async (req) => {\nlet add = |a, b| a + b;\n\
+         export default function(req) {\nlet f = asyncThing();\nlet mut handle = |x| x;\n",
     );
     assert_eq!(
         declared,
@@ -2021,6 +2022,7 @@ fn declarations_and_calls_follow_common_language_forms() {
             "add",
             "as_dict",
             "fetch",
+            "handle",
             "handler",
             "load",
             "merge",
@@ -2169,5 +2171,201 @@ async fn callee_jobs_follow_the_unchanged_shared_word_jobs() {
             .map(|event| event.donor.as_deref())
             .collect::<Vec<_>>(),
         [Some("w0")]
+    );
+}
+
+fn callee_plan_for(root: &TempDir, initial: &[(usize, f64)]) -> Vec<(usize, Vec<usize>)> {
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let initial: BTreeMap<_, _> = initial.iter().map(|&(index, p)| (index, Some(p))).collect();
+    let fresh = initial
+        .keys()
+        .map(|&index| prepared.windows[index].file)
+        .collect();
+    callees::plan(
+        &prepared,
+        "behavior",
+        &initial,
+        &fresh,
+        0.5,
+        &VecDeque::new(),
+        Reservation {
+            attempts: 8,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 18,
+            max_bytes: 608 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    )
+    .iter()
+    .map(|job| match &job.purpose {
+        Purpose::Related { targets, donor } => (*donor, targets.clone()),
+        _ => panic!("related jobs only"),
+    })
+    .collect()
+}
+
+#[test]
+fn callee_plan_ranks_rarest_names_includes_bodies_and_skips_oversized_donors() {
+    let root = fixture(0);
+    let def = |name: &str| format!("def {name}():\n    pass\n");
+    let files = [
+        (
+            "f000.rs".to_owned(),
+            "common_name(); rare_name(); mid_name(); tail_name();\n".to_owned(),
+        ),
+        (
+            "f001.py".to_owned(),
+            format!("{}{}", def("common_name"), def("rare_name")),
+        ),
+        ("f002.py".to_owned(), def("common_name")),
+        ("f003.py".to_owned(), def("common_name")),
+        ("f004.py".to_owned(), def("mid_name")),
+        ("f005.py".to_owned(), def("mid_name")),
+        (
+            "f006.py".to_owned(),
+            format!(
+                "{}def tail_name():\n{}",
+                "# pad\n".repeat(70),
+                "    step = 1\n".repeat(49)
+            ),
+        ),
+    ];
+    for (name, text) in &files {
+        fs::write(root.path().join(name), text).unwrap();
+    }
+    assert_eq!(
+        callee_plan_for(&root, &[(0, 0.9)]),
+        [(0, vec![1, 6, 7, 4, 5, 2, 3])]
+    );
+    let oversized = fixture(0);
+    fs::write(
+        oversized.path().join("f000.py"),
+        format!("x = Helper(1)\n# {}\n", "\"".repeat(1100)),
+    )
+    .unwrap();
+    fs::write(oversized.path().join("f001.rs"), "Helper(2);\n").unwrap();
+    fs::write(
+        oversized.path().join("f002.py"),
+        "class Helper:\n    pass\n",
+    )
+    .unwrap();
+    assert_eq!(
+        callee_plan_for(&oversized, &[(0, 0.95), (1, 0.6)]),
+        [(1, vec![2])]
+    );
+}
+
+fn callee_fixture() -> TempDir {
+    let root = fixture(0);
+    fs::write(
+        root.path().join("f000.rs"),
+        "much_longer_shared_identifier\nhlp();\n",
+    )
+    .unwrap();
+    for index in 1..100 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            "much_longer_shared_identifier\n",
+        )
+        .unwrap();
+    }
+    fs::write(root.path().join("f100.py"), "def hlp():\n    pass\n").unwrap();
+    root
+}
+
+fn question_names(request: &Value) -> Vec<String> {
+    request["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|question| question["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn callee_deadline_keeps_completed_shared_word_results() {
+    let server = Server::new(|request, _| {
+        if !has_context(request) {
+            return initial_related_scores(request, 0.1);
+        }
+        let mut reply = Reply::scores(request, 0.9);
+        if question_names(request).contains(&"w100".to_owned()) {
+            reply.delay = Duration::from_secs(10);
+        }
+        reply
+    })
+    .await;
+    let root = callee_fixture();
+    let report = execute_with_policy(
+        Source::open(root.path()).unwrap(),
+        "helper".into(),
+        Options {
+            timeout: Duration::from_millis(1500),
+            ..Options::default()
+        },
+        server.provider(),
+        Arc::new(AtomicBool::new(false)),
+        Policy {
+            max_attempts: 8,
+            max_bytes: 256 * 1024,
+            attempt_timeout: Duration::from_secs(1),
+        },
+    )
+    .await;
+    assert!(report.budgets.stops.contains(&"deadline"));
+    assert!(report.results.iter().any(|record| record.path != "f000.rs"));
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .all(|event| !(event.name == "w100" && event.donor.is_some()))
+    );
+}
+
+#[tokio::test]
+async fn callee_jobs_skip_donors_retracted_by_shared_word_jobs() {
+    let root = fixture(0);
+    fs::write(
+        root.path().join("f000.rs"),
+        "much_longer_shared_identifier\nhlp();\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("f001.rs"),
+        "much_longer_shared_identifier\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("f002.py"), "def hlp():\n    pass\n").unwrap();
+    let server = Server::new(|request, _| {
+        let mut reply = Reply::scores(request, 0.1);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            let retract = has_context(request) && answer["name"] == "w0";
+            if !retract && (answer["name"] == "w0" || answer["name"] == "w1") {
+                answer["probability"] = json!(0.9);
+            }
+        }
+        reply
+    })
+    .await;
+    run(&root, &server, Options::default()).await;
+    let related: Vec<Value> = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice(body).unwrap())
+        .filter(has_context)
+        .collect();
+    assert!(!related.is_empty());
+    assert!(
+        related
+            .iter()
+            .all(|request| !question_names(request).contains(&"w2".to_owned()))
     );
 }
