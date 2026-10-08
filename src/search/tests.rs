@@ -19,13 +19,36 @@ struct Reply {
 }
 impl Reply {
     fn scores(request: &Value, probability: f64) -> Self {
-        let answers: Vec<_> = request["questions"].as_array().unwrap().iter().rev().map(|question| json!({"type": "predicate", "name": question["name"], "probability": probability})).collect();
+        let answers: Vec<_> = request["questions"].as_array().unwrap().iter().rev().map(|question| if question["type"] == "choice" {
+            let probabilities: Vec<_> = question["choices"].as_array().unwrap().iter().map(|choice| json!({"value": choice["value"], "probability": if choice["value"] == "none" { 1.0 } else { 0.0 }})).collect();
+            json!({"type": "choice", "name": question["name"], "choice": "none", "probabilities": probabilities, "confidence": 1.0})
+        } else {
+            json!({"type": "predicate", "name": question["name"], "probability": probability})
+        }).collect();
         Self {
             status: 200,
             body: json!({"answers": answers}),
             delay: Duration::ZERO,
             retry_after: None,
         }
+    }
+    fn nominate(request: &Value, probability: f64, nominee: &str, choice: f64) -> Self {
+        let mut reply = Self::scores(request, probability);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["type"] == "choice" {
+                for entry in answer["probabilities"].as_array_mut().unwrap() {
+                    entry["probability"] = json!(if entry["value"] == nominee {
+                        choice
+                    } else if entry["value"] == "none" {
+                        1.0 - choice
+                    } else {
+                        0.0
+                    });
+                }
+                answer["choice"] = json!(nominee);
+            }
+        }
+        reply
     }
     fn status(status: u16) -> Self {
         Self {
@@ -1008,6 +1031,7 @@ fn request_source_ids(bodies: &[Vec<u8>]) -> Vec<usize> {
                 .as_array()
                 .unwrap()
                 .iter()
+                .filter(|question| question["type"] != "choice")
                 .map(|question| {
                     question["name"]
                         .as_str()
@@ -1074,7 +1098,7 @@ async fn delayed_routes_promote_exact_late_source_without_authorizing_results() 
                 assert!(body.len() <= 48 * 1024);
                 assert!(request["questions"].as_array().unwrap().len() <= 128);
             } else {
-                assert!(request["questions"].as_array().unwrap().len() <= 8);
+                assert!(question_names(&request).len() <= 8);
                 for candidate in input["candidates"].as_array().unwrap() {
                     let index: usize = candidate["name"].as_str().unwrap()[1..].parse().unwrap();
                     assert_eq!(candidate["text"], format!("fn item_{index}() {{}}\n"));
@@ -1995,6 +2019,7 @@ async fn stopped_completed_outcomes_preserve_errors_without_accepting_judgments(
     let refused = Attempt::Response(Ok(vec![Judgment {
         name: "w0".into(),
         probability: None,
+        choice: None,
     }]));
     assert_eq!(refused.stopped_error().unwrap().code, "provider_refusal");
     assert_eq!(
@@ -2004,6 +2029,7 @@ async fn stopped_completed_outcomes_preserve_errors_without_accepting_judgments(
     let accepted = Attempt::Response(Ok(vec![Judgment {
         name: "w0".into(),
         probability: Some(0.9),
+        choice: None,
     }]));
     assert!(accepted.stopped_error().is_none());
 }
@@ -2450,6 +2476,7 @@ fn question_names(request: &Value) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|question| question["type"] != "choice")
         .map(|question| question["name"].as_str().unwrap().to_owned())
         .collect()
 }
@@ -2662,7 +2689,7 @@ async fn late_refusal_retry_is_dropped_instead_of_risking_the_deadline() {
     );
     assert!(server.bodies().iter().all(|body| {
         let request: Value = serde_json::from_slice(body).unwrap();
-        !has_context(&request) || request["questions"].as_array().unwrap().len() == 2
+        !has_context(&request) || question_names(&request).len() == 2
     }));
 }
 
@@ -2944,6 +2971,7 @@ fn evidence_card_for(
         &best,
         &fresh,
         &BTreeSet::new(),
+        &BTreeMap::new(),
         0.5,
         Reservation {
             attempts: 18,
@@ -3060,4 +3088,82 @@ async fn evidence_request_is_skipped_when_a_card_file_changed() {
             .map(|body| serde_json::from_slice::<Value>(body).unwrap())
             .all(|request| !evidence_donor(&request))
     );
+}
+
+fn evidence_requests(server: &Server) -> Vec<Value> {
+    server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+        .filter(evidence_donor)
+        .collect()
+}
+
+#[tokio::test]
+async fn listwise_nomination_leads_the_evidence_pass() {
+    let root = fixture(0);
+    for index in 0..6 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            format!("fn item_{index}() {{ step_{index}(); }}\n"),
+        )
+        .unwrap();
+    }
+    let server = Server::new(|request, _| {
+        if evidence_donor(request) {
+            return Reply::scores(request, 0.9);
+        }
+        if has_context(request) {
+            return Reply::scores(request, 0.1);
+        }
+        let mut reply = Reply::nominate(request, 0.1, "w4", 0.9);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["name"] == "w0" {
+                answer["probability"] = json!(0.9);
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    let evidence = evidence_requests(&server);
+    assert!(!evidence.is_empty());
+    assert_eq!(question_names(&evidence[0])[0], "w4");
+    assert!(report.results.iter().any(|record| record.path == "f004.rs"));
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .any(|event| event.name == "w4" && event.donor.is_none() && event.choice == Some(0.9))
+    );
+}
+
+#[tokio::test]
+async fn nomination_is_checked_alone_when_nothing_was_accepted() {
+    for confirmed in [true, false] {
+        let root = fixture(4);
+        let server = Server::new(move |request, _| {
+            if question_names(request).len() == 1 {
+                return Reply::scores(request, if confirmed { 0.9 } else { 0.1 });
+            }
+            Reply::nominate(request, 0.1, "w2", 0.8)
+        })
+        .await;
+        let report = run(&root, &server, Options::default()).await;
+        let bodies = server.bodies();
+        let single: Vec<Value> = bodies
+            .iter()
+            .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+            .filter(|request| question_names(request) == ["w2"])
+            .collect();
+        assert_eq!(single.len(), 1);
+        assert!(!has_context(&single[0]));
+        assert_eq!(report.results.len(), usize::from(confirmed));
+        assert!(report.errors.is_empty());
+        assert_eq!(report.budgets.attempts, 2);
+    }
+    let server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+    let report = run(&fixture(4), &server, Options::default()).await;
+    assert_eq!(report.budgets.attempts, 1);
+    assert!(report.results.is_empty());
 }

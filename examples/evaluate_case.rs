@@ -91,6 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 "name": event.name,
                 "donor": event.donor,
                 "score": event.probability,
+                "choice": event.choice,
             })
         })
         .collect();

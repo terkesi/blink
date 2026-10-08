@@ -26,6 +26,7 @@ const CONCURRENCY: usize = 4;
 const CALLEE_JOBS: usize = 2;
 const CALLEE_BYTES: usize = 96 * 1024;
 const EVIDENCE_JOBS: usize = 2;
+const NOMINATION_CHOICE: f64 = 0.6;
 const EVIDENCE_BATCH: usize = 4;
 const EVIDENCE_BYTES: usize = 12 * 1024;
 const EVIDENCE_LIMIT: usize = EVIDENCE_BYTES + 4096;
@@ -332,6 +333,7 @@ pub struct JudgmentEvent {
     pub name: String,
     pub donor: Option<String>,
     pub probability: Option<f64>,
+    pub choice: Option<f64>,
 }
 #[derive(Debug, Serialize)]
 pub struct SearchCoverage {
@@ -647,6 +649,8 @@ async fn execute_with_policy(
     let mut refusal_retried = BTreeSet::new();
     let mut probabilities = BTreeMap::new();
     let mut best_scores = BTreeMap::new();
+    let mut nominated: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut nomination_checked = false;
     let mut evidence_card: Option<evidence::Card> = None;
     let mut judgment_events = Vec::new();
     let mut checked = BTreeSet::new();
@@ -878,30 +882,56 @@ async fn execute_with_policy(
                     &best_scores,
                     &fresh,
                     &followup_targets,
+                    &nominated,
                     options.threshold,
                     used,
                     evidence_policy,
                     &mut { &control },
                 );
-                if let Some((card, jobs)) = planned
-                    && !jobs.is_empty()
-                    && card.4.iter().all(|&file| {
-                        related::recheck(
-                            &mut prepared,
-                            file,
-                            &mut fresh,
-                            &mut changed_files,
-                            &mut errors,
-                            &mut { &control },
-                        )
-                    })
-                {
-                    evidence_card = Some(card);
-                    phase = Phase::Evidence;
-                    initial_state =
-                        Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
-                    queue = jobs;
-                    continue;
+                match planned {
+                    Some((card, jobs))
+                        if !jobs.is_empty()
+                            && card.4.iter().all(|&file| {
+                                related::recheck(
+                                    &mut prepared,
+                                    file,
+                                    &mut fresh,
+                                    &mut changed_files,
+                                    &mut errors,
+                                    &mut { &control },
+                                )
+                            }) =>
+                    {
+                        evidence_card = Some(card);
+                        phase = Phase::Evidence;
+                        initial_state =
+                            Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
+                        queue = jobs;
+                        continue;
+                    }
+                    None if !nomination_checked => {
+                        nomination_checked = true;
+                        let top = nominated
+                            .iter()
+                            .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(a.0)))
+                            .map(|(&index, _)| index);
+                        if let Some(index) = top
+                            && let Ok(batch) = source_batch(&prepared, &query, &[index])
+                        {
+                            phase = Phase::Evidence;
+                            initial_state =
+                                Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
+                            queue = VecDeque::from([Job {
+                                batch,
+                                purpose: Purpose::Source(vec![index]),
+                                pending_retry: None,
+                                refusal_retry: false,
+                                ready: tokio::time::Instant::now(),
+                            }]);
+                            continue;
+                        }
+                    }
+                    _ => {}
                 }
             }
             break;
@@ -945,7 +975,13 @@ async fn execute_with_policy(
                         for judgment in judgments {
                             let index = judgment.name.strip_prefix('w').and_then(|name| name.parse::<usize>().ok()).expect("provider validates batch names");
                             let donor = match &job.purpose { Purpose::Related { donor, .. } => Some(format!("w{donor}")), Purpose::Evidence { .. } => Some("evidence".to_owned()), _ => None };
-                            judgment_events.push(JudgmentEvent { name: judgment.name, donor, probability: judgment.probability });
+                            judgment_events.push(JudgmentEvent { name: judgment.name, donor, probability: judgment.probability, choice: judgment.choice });
+                            if judgment.probability.is_none_or(|p| p < options.threshold)
+                                && let Some(choice) = judgment.choice.filter(|&c| c >= NOMINATION_CHOICE)
+                            {
+                                let entry = nominated.entry(index).or_insert(choice);
+                                *entry = entry.max(choice);
+                            }
                             let Some(probability) = judgment.probability else {
                                 probabilities.entry(index).or_insert(None);
                                 if refusal_retried.insert(index) {

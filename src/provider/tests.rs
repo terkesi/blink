@@ -111,10 +111,30 @@ async fn sends_fixed_predicates_and_maps_answers_to_candidate_order() {
     assert_eq!(body.len(), batch().encoded_len());
     let json: Value = serde_json::from_slice(body).unwrap();
     assert_eq!(json["model"], MODEL);
-    assert_eq!(json["questions"].as_array().unwrap().len(), 2);
+    assert_eq!(json["questions"].as_array().unwrap().len(), 3);
     assert_eq!(json["questions"][0]["name"], "c1");
     assert_eq!(json["questions"][1]["name"], "c2");
-    for question in json["questions"].as_array().unwrap() {
+    let choice = &json["questions"][2];
+    assert_eq!(
+        (choice["type"].as_str(), choice["name"].as_str()),
+        (Some("choice"), Some("best"))
+    );
+    assert_eq!(
+        choice["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["value"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["c1", "c2", "none"]
+    );
+    assert!(
+        choice["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Choose none")
+    );
+    for question in json["questions"].as_array().unwrap().iter().take(2) {
         assert_eq!(question["type"], "predicate");
         let instructions = question["instructions"].as_str().unwrap();
         assert!(instructions.contains(&format!(
@@ -419,4 +439,56 @@ fn related_evidence_keeps_control_questions_and_bounds_escaped_growth() {
         ..evidence
     };
     assert!(Batch::encode_with_context("behavior", &targets, &invalid, 4096).is_err());
+}
+
+#[tokio::test]
+async fn choice_answer_fills_judgment_choice_and_is_optional() {
+    let with_choice = r#"{"answers":[{"type":"predicate","name":"c2","probability":0.1},{"type":"predicate","name":"c1","probability":0.9},{"type":"choice","name":"best","choice":"c2","probabilities":[{"value":"c1","probability":0.05},{"value":"c2","probability":0.85},{"value":"none","probability":0.1}],"confidence":0.8}]}"#;
+    let (endpoint, _handle) = serve(http(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        with_choice,
+    ))
+    .await;
+    let answers = Provider::for_test(&endpoint)
+        .attempt(&batch())
+        .await
+        .unwrap();
+    assert_eq!(answers[0].choice, Some(0.05));
+    assert_eq!(answers[1].choice, Some(0.85));
+    let (endpoint, _handle) = serve(http(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        valid_answers(),
+    ))
+    .await;
+    let answers = Provider::for_test(&endpoint)
+        .attempt(&batch())
+        .await
+        .unwrap();
+    assert_eq!(
+        (answers[0].probability, answers[0].choice),
+        (Some(0.9), None)
+    );
+    let refused = r#"{"answers":[{"type":"predicate","name":"c2","probability":0.1},{"type":"predicate","name":"c1","probability":0.9},{"type":"refusal","name":"best"}]}"#;
+    let (endpoint, _handle) = serve(http(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        refused,
+    ))
+    .await;
+    let answers = Provider::for_test(&endpoint)
+        .attempt(&batch())
+        .await
+        .unwrap();
+    assert_eq!(answers[1].choice, None);
+    let bad = r#"{"answers":[{"type":"predicate","name":"c2","probability":0.1},{"type":"predicate","name":"c1","probability":0.9},{"type":"choice","name":"best","choice":"c2","probabilities":[{"value":"c2","probability":1.5}]}]}"#;
+    let (endpoint, _handle) =
+        serve(http("200 OK", "Content-Type: application/json\r\n", bad)).await;
+    assert!(
+        Provider::for_test(&endpoint)
+            .attempt(&batch())
+            .await
+            .is_err()
+    );
 }

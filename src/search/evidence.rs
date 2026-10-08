@@ -10,6 +10,7 @@ pub(super) fn plan(
     best: &BTreeMap<usize, f64>,
     fresh: &BTreeSet<usize>,
     followup_targets: &BTreeSet<usize>,
+    nominated: &BTreeMap<usize, f64>,
     threshold: f64,
     mut reserved: Reservation,
     policy: Policy,
@@ -138,7 +139,9 @@ pub(super) fn plan(
             continue;
         }
         let window = &prepared.windows[index];
-        let (category, distance) = if accepted_files.contains(&window.file) {
+        let (category, distance) = if let Some(choice) = nominated.get(&index) {
+            (0u8, ((1.0 - choice) * 1000.0) as usize)
+        } else if accepted_files.contains(&window.file) {
             let distance = accepted
                 .iter()
                 .filter(|&&(accepted_index, _)| {
@@ -156,11 +159,11 @@ pub(super) fn plan(
                 })
                 .min()
                 .unwrap_or(0);
-            (0u8, distance)
+            (1u8, distance)
         } else if followup_targets.contains(&index) {
-            (1, 0)
-        } else {
             (2, 0)
+        } else {
+            (3, 0)
         };
         targets.push((category, distance, index, score));
     }
