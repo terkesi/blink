@@ -1429,8 +1429,8 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
         );
-        assert_eq!(report.budgets.max_attempts, 18);
-        assert_eq!(report.budgets.max_encoded_request_bytes, 640 * 1024);
+        assert_eq!(report.budgets.max_attempts, 20);
+        assert_eq!(report.budgets.max_encoded_request_bytes, 736 * 1024);
         let events: Vec<_> = report
             .judgment_events
             .iter()
@@ -1905,8 +1905,8 @@ async fn retry_headroom_success_body_receipt() {
 }
 
 #[tokio::test]
-async fn late_related_retries_use_only_two_extra_attempts_and_exact_bodies() {
-    for failures in [1, 3] {
+async fn late_related_retries_use_unspent_follow_up_and_headroom_with_exact_bodies() {
+    for failures in [1, 5] {
         let server = Server::new(move |request, number| {
             if (17 - failures..=16).contains(&number) {
                 Reply::status(503)
@@ -1917,9 +1917,9 @@ async fn late_related_retries_use_only_two_extra_attempts_and_exact_bodies() {
         .await;
         let report = run(&retry_headroom_fixture(), &server, Options::default()).await;
         let bodies = server.bodies();
-        assert_eq!(bodies.len(), 16 + failures.min(2));
-        assert_eq!(report.budgets.retries, failures.min(2));
-        assert!(report.budgets.encoded_request_bytes <= 640 * 1024);
+        assert_eq!(bodies.len(), 16 + failures.min(4));
+        assert_eq!(report.budgets.retries, failures.min(4));
+        assert!(report.budgets.encoded_request_bytes <= 736 * 1024);
         assert_eq!(
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
@@ -1998,5 +1998,176 @@ async fn in_flight_retry_keeps_observed_error_at_deadline() {
             .errors
             .iter()
             .any(|e| e.code == "transient_http" && e.status == Some(503))
+    );
+}
+
+#[test]
+fn declarations_and_calls_follow_common_language_forms() {
+    let declared = callees::declarations(
+        "class Timeout:\n    def as_dict(self) -> dict:\nasync def fetch(url):\n\
+         pub(crate) fn merge(a: u8)\npub const fn new() -> Self\nimpl Window {\nstruct Window {\n\
+         func (c *Client) Do(req *Request)\nfunc Parse(s string)\n\
+         export function stripAuth(url: string)\nexport const parse = (input) =>\n  private async load(id) {\n\
+         return helper(value)\ndefault:\ntype(x)\nlet Some(x) = y else { return };\nlet Point { x, y } = p;\n\
+         let len = 3;\nconst handler = async (req) => {\nlet add = |a, b| a + b;\n",
+    );
+    assert_eq!(
+        declared,
+        BTreeSet::from([
+            "Do",
+            "Parse",
+            "Timeout",
+            "Window",
+            "add",
+            "as_dict",
+            "fetch",
+            "handler",
+            "load",
+            "merge",
+            "new",
+            "parse",
+            "stripAuth"
+        ])
+    );
+    assert_eq!(
+        callees::calls("x = Timeout(timeout).as_dict()\nif (ready) { run (1); 2(y) }"),
+        BTreeSet::from(["Timeout", "as_dict", "if", "run"])
+    );
+    assert!(
+        callees::calls("def update(self):\nclass Cookies(Base):\npub fn new(a: u8)\n").is_empty()
+    );
+}
+
+#[test]
+fn callee_plan_adds_unplanned_unaccepted_definitions_with_their_best_caller() {
+    let root = fixture(0);
+    let files = [
+        (
+            "f000.rs",
+            "run_task(job);\nshared_step(x);\naccepted_helper();\n",
+        ),
+        ("f001.rs", "run_task(other);\n"),
+        ("f002.py", "def run_task(job):\n    pass\n"),
+        ("f003.py", "def shared_step(x):\n    pass\n"),
+        ("f004.py", "def shared_step(y):\n    pass\n"),
+        ("f005.py", "def accepted_helper():\n    pass\n"),
+        ("f006.rs", "only_c_calls(z);\n"),
+        ("f007.py", "def only_c_calls(z):\n    pass\n"),
+        ("f008.rs", "only_d_calls(z);\n"),
+        ("f009.py", "def only_d_calls(z):\n    pass\n"),
+    ];
+    for (name, text) in files {
+        fs::write(root.path().join(name), text).unwrap();
+    }
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let initial = BTreeMap::from([
+        (0, Some(0.95)),
+        (1, Some(0.7)),
+        (2, Some(0.1)),
+        (5, Some(0.8)),
+        (6, Some(0.6)),
+        (8, Some(0.55)),
+    ]);
+    let fresh = BTreeSet::from([0, 1, 5, 6, 8]);
+    let plan = |planned: &VecDeque<Job>| -> Vec<(usize, Vec<usize>)> {
+        callees::plan(
+            &prepared,
+            "behavior",
+            &initial,
+            &fresh,
+            0.5,
+            planned,
+            Reservation {
+                attempts: 8,
+                bytes: 1000,
+            },
+            Policy {
+                max_attempts: 18,
+                max_bytes: 608 * 1024,
+                attempt_timeout: Duration::from_secs(5),
+            },
+            &mut || Control::Continue,
+        )
+        .iter()
+        .map(|job| match &job.purpose {
+            Purpose::Related { targets, donor } => (*donor, targets.clone()),
+            _ => panic!("related jobs only"),
+        })
+        .collect()
+    };
+    assert_eq!(plan(&VecDeque::new()), [(0, vec![2, 3, 4]), (6, vec![7])]);
+    let name = "w2".to_owned();
+    let planned = VecDeque::from([Job {
+        batch: Batch::encode("behavior", &[candidate(&prepared, 2, &name)]).unwrap(),
+        purpose: Purpose::Related {
+            targets: vec![2],
+            donor: 0,
+        },
+        pending_retry: None,
+        ready: tokio::time::Instant::now(),
+    }]);
+    assert_eq!(plan(&planned), [(6, vec![7]), (8, vec![9])]);
+}
+
+#[tokio::test]
+async fn callee_jobs_follow_the_unchanged_shared_word_jobs() {
+    let root = fixture(0);
+    fs::write(
+        root.path().join("f000.rs"),
+        "much_longer_shared_identifier\nhlp();\n",
+    )
+    .unwrap();
+    for index in 1..100 {
+        fs::write(
+            root.path().join(format!("f{index:03}.rs")),
+            "much_longer_shared_identifier\n",
+        )
+        .unwrap();
+    }
+    fs::write(root.path().join("f100.py"), "def hlp():\n    pass\n").unwrap();
+    let server = Server::new(|request, _| {
+        if has_context(request) {
+            Reply::scores(request, 0.1)
+        } else {
+            initial_related_scores(request, 0.1)
+        }
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    let related: Vec<Value> = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice(body).unwrap())
+        .filter(has_context)
+        .collect();
+    assert_eq!(related.len(), 9);
+    let names = |request: &Value| -> Vec<String> {
+        request["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|question| question["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(
+        related[..8]
+            .iter()
+            .all(|request| !names(request).contains(&"w100".to_owned()))
+    );
+    assert_eq!(names(&related[8]), ["w100"]);
+    assert_eq!(report.budgets.attempts, 17);
+    assert_eq!(
+        report
+            .judgment_events
+            .iter()
+            .filter(|event| event.name == "w100" && event.donor.is_some())
+            .map(|event| event.donor.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("w0")]
     );
 }

@@ -1,4 +1,5 @@
 mod bounds;
+mod callees;
 mod navigation;
 mod related;
 
@@ -21,6 +22,8 @@ use tokio::task::JoinSet;
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const BATCH_SIZE: usize = 8;
 const CONCURRENCY: usize = 4;
+const CALLEE_JOBS: usize = 2;
+const CALLEE_BYTES: usize = 96 * 1024;
 const INCLUDE_RELATED_EVIDENCE: bool = true;
 
 #[derive(Clone, Debug)]
@@ -517,22 +520,24 @@ pub async fn execute(
     .await
 }
 
+fn candidate<'a>(prepared: &'a Prepared, index: usize, name: &'a str) -> Candidate<'a> {
+    let window = &prepared.windows[index];
+    let file = &prepared.snapshot.files()[window.file];
+    Candidate {
+        name,
+        path: file.path(),
+        text: &file.text()[window.start..window.end],
+        start_line: window.start_line,
+        end_line: window.end_line,
+    }
+}
+
 fn source_batch(prepared: &Prepared, query: &str, indices: &[usize]) -> Result<Batch, Failure> {
     let names: Vec<_> = indices.iter().map(|index| format!("w{index}")).collect();
     let candidates: Vec<_> = indices
         .iter()
         .zip(&names)
-        .map(|(&index, name)| {
-            let window = &prepared.windows[index];
-            let file = &prepared.snapshot.files()[window.file];
-            Candidate {
-                name,
-                path: file.path(),
-                text: &file.text()[window.start..window.end],
-                start_line: window.start_line,
-                end_line: window.end_line,
-            }
-        })
+        .map(|(&index, name)| candidate(prepared, index, name))
         .collect();
     Batch::encode(query, &candidates)
 }
@@ -555,12 +560,21 @@ async fn execute_with_policy(
             ..policy
         }
     };
+    let followup = if options.thorough {
+        policy
+    } else {
+        Policy {
+            max_attempts: policy.max_attempts + CALLEE_JOBS,
+            max_bytes: policy.max_bytes + CALLEE_BYTES,
+            ..policy
+        }
+    };
     let actual_policy = if options.thorough {
         policy
     } else {
         Policy {
-            max_attempts: policy.max_attempts + 2,
-            max_bytes: policy.max_bytes + 128 * 1024,
+            max_attempts: followup.max_attempts + 2,
+            max_bytes: followup.max_bytes + 128 * 1024,
             ..policy
         }
     };
@@ -630,7 +644,7 @@ async fn execute_with_policy(
         let admission = if phase == Phase::Initial {
             initial_policy
         } else {
-            policy
+            followup
         };
         while tasks.len() < CONCURRENCY {
             if control() != Control::Continue {
@@ -741,7 +755,7 @@ async fn execute_with_policy(
         if tasks.is_empty() && queue.is_empty() && source_exhausted {
             if phase == Phase::Initial && !options.thorough {
                 phase = Phase::Related;
-                initial_state = Some((probabilities.clone(), fresh.clone()));
+                initial_state = Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                 let donors: BTreeSet<_> = probabilities
                     .iter()
                     .filter_map(|(&index, probability): (&usize, &Option<f64>)| {
@@ -770,7 +784,19 @@ async fn execute_with_policy(
                     policy,
                     &mut { &control },
                 );
+                let callee_jobs = callees::plan(
+                    &prepared,
+                    &query,
+                    &probabilities,
+                    &fresh,
+                    options.threshold,
+                    &related_jobs,
+                    used,
+                    followup,
+                    &mut { &control },
+                );
                 queue = related_jobs;
+                queue.extend(callee_jobs);
                 if let Some(stop) = stop {
                     stops.insert(stop);
                 }
@@ -883,10 +909,11 @@ async fn execute_with_policy(
         }
     }
     if control() != Control::Continue
-        && let Some((initial_probabilities, initial_fresh)) = initial_state
+        && let Some((initial_probabilities, initial_fresh, initial_events)) = initial_state
     {
         probabilities = initial_probabilities;
         fresh.retain(|file| initial_fresh.contains(file));
+        judgment_events.truncate(initial_events);
     }
     let raw_judgments = probabilities
         .iter()
