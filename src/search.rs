@@ -774,10 +774,11 @@ async fn execute_with_policy(
                 continue;
             };
             used = reservation;
-            related_sent |= matches!(
-                job.purpose,
-                Purpose::Related { .. } | Purpose::Evidence { .. }
-            );
+            related_sent |= phase == Phase::Deepen
+                || matches!(
+                    job.purpose,
+                    Purpose::Related { .. } | Purpose::Evidence { .. }
+                );
             retries += usize::from(job.pending_retry.is_some() || job.refusal_retry);
             match &job.purpose {
                 Purpose::Source(indices) | Purpose::Evidence { targets: indices } => {

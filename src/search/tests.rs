@@ -3285,3 +3285,118 @@ async fn deepen_needs_an_accepted_window_and_stays_within_its_allowance() {
     assert!(deepen.iter().all(|lines| lines.len() == DEEPEN_BATCH));
     assert!(report.errors.is_empty());
 }
+
+#[tokio::test]
+async fn deepening_results_are_rechecked_before_output() {
+    let root = fixture(300);
+    let mut big = String::from("fn behavior_entry() { start(); }\n");
+    for n in 1..600 {
+        big.push_str(&format!("fn deep_{n:03}() {{}}\n"));
+    }
+    fs::write(root.path().join("big.rs"), &big).unwrap();
+    let path = root.path().join("big.rs");
+    let server = Server::new(move |request, _| {
+        if is_route(request) {
+            return Reply::scores(request, 0.5);
+        }
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let candidates = input["candidates"].as_array().unwrap();
+        let big_lines: Vec<u64> = candidates
+            .iter()
+            .filter(|c| c["path"] == "big.rs")
+            .map(|c| c["start_line"].as_u64().unwrap())
+            .collect();
+        if candidates.len() == 1 && big_lines == [1] {
+            return Reply::scores(request, 0.9);
+        }
+        if big_lines.len() >= 4 {
+            fs::write(&path, "rewritten\n").unwrap();
+            return Reply::scores(request, 0.9);
+        }
+        if big_lines.contains(&1) {
+            return Reply::nominate(
+                request,
+                0.1,
+                candidates
+                    .iter()
+                    .find(|c| c["path"] == "big.rs" && c["start_line"] == 1)
+                    .unwrap()["name"]
+                    .as_str()
+                    .unwrap(),
+                0.9,
+            );
+        }
+        Reply::scores(request, 0.1)
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    assert_eq!(report.changed_files, ["big.rs"]);
+    assert!(report.results.iter().all(|record| record.path != "big.rs"));
+    assert!(!report.coverage.complete);
+}
+
+#[test]
+fn deepen_plan_orders_by_file_strength_then_distance() {
+    let root = fixture(0);
+    let lines: String = (1..=600).map(|n| format!("line_{n:03}\n")).collect();
+    fs::write(root.path().join("f000.py"), &lines).unwrap();
+    fs::write(root.path().join("f001.py"), &lines).unwrap();
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let windows_of = |file: usize| -> Vec<usize> {
+        (0..prepared.windows.len())
+            .filter(|&index| prepared.windows[index].file == file)
+            .collect()
+    };
+    let (a, b) = (windows_of(0), windows_of(1));
+    assert!(a.len() >= 8 && b.len() >= 8);
+    // f001 is accepted more strongly, in its middle window; f000 at its first window.
+    let probabilities: BTreeMap<usize, Option<f64>> =
+        BTreeMap::from([(a[0], Some(0.6)), (b[4], Some(0.9))]);
+    let fresh: BTreeSet<usize> = BTreeSet::from([0, 1]);
+    let jobs = deepen::plan(
+        &prepared,
+        "behavior",
+        &probabilities,
+        &fresh,
+        0.5,
+        Reservation {
+            attempts: 20,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 24,
+            max_bytes: 768 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    let order: Vec<usize> = jobs
+        .iter()
+        .flat_map(|job| match &job.purpose {
+            Purpose::Source(indices) => indices.clone(),
+            _ => panic!("source jobs only"),
+        })
+        .collect();
+    let b_first: Vec<usize> = order
+        .iter()
+        .copied()
+        .take_while(|index| b.contains(index))
+        .collect();
+    assert_eq!(
+        b_first.len(),
+        b.len() - 1,
+        "the stronger file is read first, all of it"
+    );
+    assert_eq!(
+        &b_first[..2],
+        &[b[3], b[5]],
+        "nearest to the accepted middle window first"
+    );
+    assert!(order[b_first.len()..].iter().all(|index| a.contains(index)));
+    assert_eq!(order.len(), (a.len() - 1) + (b.len() - 1));
+}
