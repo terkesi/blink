@@ -1551,8 +1551,8 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
         );
-        assert_eq!(report.budgets.max_attempts, 22);
-        assert_eq!(report.budgets.max_encoded_request_bytes, 768 * 1024);
+        assert_eq!(report.budgets.max_attempts, 26);
+        assert_eq!(report.budgets.max_encoded_request_bytes, 896 * 1024);
         let events: Vec<_> = report
             .judgment_events
             .iter()
@@ -2073,9 +2073,9 @@ async fn late_related_retries_use_unspent_follow_up_and_headroom_with_exact_bodi
         .await;
         let report = run(&retry_headroom_fixture(), &server, Options::default()).await;
         let bodies = server.bodies();
-        assert_eq!(bodies.len(), 16 + failures.min(6));
-        assert_eq!(report.budgets.retries, failures.min(6));
-        assert!(report.budgets.encoded_request_bytes <= 768 * 1024);
+        assert_eq!(bodies.len(), 16 + failures.min(10));
+        assert_eq!(report.budgets.retries, failures.min(10));
+        assert!(report.budgets.encoded_request_bytes <= 896 * 1024);
         assert_eq!(
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
@@ -2083,17 +2083,10 @@ async fn late_related_retries_use_unspent_follow_up_and_headroom_with_exact_bodi
         for retried in &bodies[16..] {
             assert!(bodies[..16].contains(retried));
         }
-        if failures == 1 {
-            assert!(report.errors.is_empty());
-        } else {
-            assert!(report.errors.iter().any(|e| e.code == "retry_budget"));
-            assert!(
-                report
-                    .errors
-                    .iter()
-                    .any(|e| e.code == "transient_http" && e.status == Some(503))
-            );
-        }
+        assert!(
+            report.errors.is_empty(),
+            "every failed request was retried within the headroom"
+        );
     }
 }
 
@@ -3166,4 +3159,129 @@ async fn nomination_is_checked_alone_when_nothing_was_accepted() {
     let report = run(&fixture(4), &server, Options::default()).await;
     assert_eq!(report.budgets.attempts, 1);
     assert!(report.results.is_empty());
+}
+
+fn deepen_fixture() -> TempDir {
+    let root = fixture(300);
+    let mut big = String::from("fn behavior_entry() { start(); }\n");
+    for n in 1..600 {
+        big.push_str(&format!("fn deep_{n:03}() {{}}\n"));
+    }
+    fs::write(root.path().join("big.rs"), big).unwrap();
+    root
+}
+
+fn big_file_requests(server: &Server) -> Vec<Vec<usize>> {
+    server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+        .filter(|request| !is_route(request) && !has_context(request))
+        .filter_map(|request| {
+            let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+            let lines: Vec<usize> = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["path"] == "big.rs")
+                .map(|c| c["start_line"].as_u64().unwrap() as usize)
+                .collect();
+            (!lines.is_empty()).then_some(lines)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn deepen_reads_unread_windows_of_an_accepted_file_nearest_first() {
+    let server = Server::new(|request, _| {
+        if is_route(request) {
+            return Reply::scores(request, 0.5);
+        }
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let mut reply = Reply::scores(request, 0.1);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            let candidate = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == answer["name"]);
+            if candidate.is_some_and(|c| c["path"] == "big.rs") {
+                answer["probability"] = json!(0.9);
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&deepen_fixture(), &server, Options::default()).await;
+    let requests = big_file_requests(&server);
+    assert_eq!(
+        &requests[..2],
+        [vec![1], vec![73]],
+        "the initial pass reads two windows"
+    );
+    assert_eq!(
+        requests.last().unwrap(),
+        &[217, 289, 361, 433, 505, 577],
+        "deepening reads what the follow-up passes left unread, nearest first"
+    );
+    let bodies = server.bodies();
+    let position = bodies
+        .iter()
+        .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+        .position(|request| {
+            let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+            input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["path"] == "big.rs" && c["start_line"] == 577)
+        })
+        .unwrap();
+    assert_eq!(position, bodies.len() - 1, "deepening is the final request");
+    assert!(
+        report
+            .results
+            .iter()
+            .any(|record| record.path == "big.rs" && record.end_line == 600)
+    );
+}
+
+#[tokio::test]
+async fn deepen_needs_an_accepted_window_and_stays_within_its_allowance() {
+    let server =
+        Server::new(|request, _| Reply::scores(request, if is_route(request) { 0.5 } else { 0.1 }))
+            .await;
+    let report = run(&deepen_fixture(), &server, Options::default()).await;
+    assert_eq!(big_file_requests(&server), [vec![1], vec![73]]);
+    assert!(report.results.is_empty());
+    let root = fixture(300);
+    let mut huge = String::from("fn behavior_entry() { start(); }\n");
+    for n in 1..6000 {
+        huge.push_str(&format!("fn deep_{n:04}() {{}}\n"));
+    }
+    fs::write(root.path().join("big.rs"), huge).unwrap();
+    let server = Server::new(|request, _| {
+        if is_route(request) {
+            return Reply::scores(request, 0.5);
+        }
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let mut reply = Reply::scores(request, 0.1);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            let candidate = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == answer["name"]);
+            if candidate.is_some_and(|c| c["path"] == "big.rs" && c["start_line"] == 1) {
+                answer["probability"] = json!(0.9);
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    let deepen: Vec<_> = big_file_requests(&server).into_iter().skip(2).collect();
+    assert_eq!(deepen.len(), DEEPEN_JOBS);
+    assert!(deepen.iter().all(|lines| lines.len() == DEEPEN_BATCH));
+    assert!(report.errors.is_empty());
 }

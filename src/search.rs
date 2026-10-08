@@ -1,5 +1,6 @@
 mod bounds;
 mod callees;
+mod deepen;
 mod evidence;
 mod navigation;
 mod related;
@@ -25,6 +26,10 @@ const BATCH_SIZE: usize = 8;
 const CONCURRENCY: usize = 4;
 const CALLEE_JOBS: usize = 2;
 const CALLEE_BYTES: usize = 96 * 1024;
+const DEEPEN_JOBS: usize = 4;
+const DEEPEN_BATCH: usize = 8;
+const DEEPEN_BYTES: usize = 128 * 1024;
+const DEEPEN_MIN_UNREAD: usize = 4;
 const EVIDENCE_JOBS: usize = 2;
 const NOMINATION_CHOICE: f64 = 0.6;
 const EVIDENCE_BATCH: usize = 4;
@@ -485,6 +490,7 @@ enum Phase {
     Related,
     Callee,
     Evidence,
+    Deepen,
 }
 
 enum Attempt {
@@ -590,15 +596,25 @@ async fn execute_with_policy(
             ..policy
         }
     };
+    let deepen_policy = if options.thorough {
+        policy
+    } else {
+        Policy {
+            max_attempts: evidence_policy.max_attempts + DEEPEN_JOBS,
+            max_bytes: evidence_policy.max_bytes + DEEPEN_BYTES,
+            ..policy
+        }
+    };
     let actual_policy = if options.thorough {
         policy
     } else {
         Policy {
-            max_attempts: evidence_policy.max_attempts + 2,
-            max_bytes: evidence_policy.max_bytes + 128 * 1024,
+            max_attempts: deepen_policy.max_attempts + 2,
+            max_bytes: deepen_policy.max_bytes + 128 * 1024,
             ..policy
         }
     };
+    let mut deepened = false;
     let mut phase = Phase::Initial;
     let mut initial_state = None;
     let mut related_sent = false;
@@ -674,6 +690,7 @@ async fn execute_with_policy(
         let admission = match phase {
             Phase::Initial => initial_policy,
             Phase::Evidence => evidence_policy,
+            Phase::Deepen => deepen_policy,
             _ => followup,
         };
         while tasks.len() < CONCURRENCY {
@@ -932,6 +949,31 @@ async fn execute_with_policy(
                         }
                     }
                     _ => {}
+                }
+            }
+            if matches!(phase, Phase::Related | Phase::Callee | Phase::Evidence)
+                && !deepened
+                && !options.thorough
+                && tokio::time::Instant::now() + policy.attempt_timeout
+                    <= tokio::time::Instant::from_std(deadline)
+            {
+                deepened = true;
+                let jobs = deepen::plan(
+                    &prepared,
+                    &query,
+                    &probabilities,
+                    &fresh,
+                    options.threshold,
+                    used,
+                    deepen_policy,
+                    &mut { &control },
+                );
+                if !jobs.is_empty() {
+                    phase = Phase::Deepen;
+                    initial_state =
+                        Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
+                    queue = jobs;
+                    continue;
                 }
             }
             break;
