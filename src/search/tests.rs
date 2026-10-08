@@ -582,8 +582,99 @@ async fn changed_source_is_omitted_and_refusal_is_unjudged() {
     let server = Server::new(|request, _| { let mut reply = Reply::scores(request, 0.9); reply.body["answers"][0] = json!({"type": "refusal", "name": request["questions"][0]["name"], "reason": "safe refusal"}); reply }).await;
     let report = run(&fixture(1), &server, Options::default()).await;
     assert_eq!(report.exit_code(), 3);
+    assert!(report.errors.is_empty());
+    assert_eq!(report.operation, Operation::Completed);
     assert_eq!(report.coverage.windows_refused, 1);
     assert_eq!(report.coverage.windows_judged, 0);
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 2);
+    let retry: Value = serde_json::from_slice(&bodies[1]).unwrap();
+    assert_eq!(retry["questions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn refused_source_window_is_asked_alone_and_uses_retry_score() {
+    let server = Server::new(|request, _| {
+        let mut reply = Reply::scores(request, 0.9);
+        if request["questions"].as_array().unwrap().len() > 1 {
+            for answer in reply.body["answers"].as_array_mut().unwrap() {
+                if answer["name"] == "w1" {
+                    *answer = json!({"type": "refusal", "name": "w1", "reason": "safe refusal"});
+                }
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&fixture(2), &server, Options::default()).await;
+    assert!(report.errors.is_empty());
+    assert_eq!(report.operation, Operation::Completed);
+    assert_eq!(report.coverage.windows_refused, 0);
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|j| j.name == "w1")
+            .unwrap()
+            .probability,
+        Some(0.9)
+    );
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 2);
+    let retry: Value = serde_json::from_slice(&bodies[1]).unwrap();
+    let questions = retry["questions"].as_array().unwrap();
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0]["name"], "w1");
+    assert_eq!(
+        report
+            .judgment_events
+            .iter()
+            .filter(|e| e.name == "w1")
+            .map(|e| e.probability)
+            .collect::<Vec<_>>(),
+        [None, Some(0.9)]
+    );
+}
+
+#[tokio::test]
+async fn window_refused_twice_stays_unjudged_without_error() {
+    let server = Server::new(|request, _| {
+        let mut reply = Reply::scores(request, 0.9);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["name"] == "w1" {
+                *answer = json!({"type": "refusal", "name": "w1", "reason": "safe refusal"});
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&fixture(2), &server, Options::default()).await;
+    assert!(report.errors.is_empty());
+    assert_eq!(report.operation, Operation::Completed);
+    assert_eq!(report.coverage.windows_refused, 1);
+    assert!(!report.coverage.complete);
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|j| j.name == "w1")
+            .unwrap()
+            .probability,
+        None
+    );
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 2);
+    let retry: Value = serde_json::from_slice(&bodies[1]).unwrap();
+    assert_eq!(retry["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report
+            .judgment_events
+            .iter()
+            .filter(|e| e.name == "w1")
+            .map(|e| e.probability)
+            .collect::<Vec<_>>(),
+        [None, None]
+    );
 }
 
 #[tokio::test]
@@ -1473,13 +1564,38 @@ async fn related_refusal_and_error_retain_prior_probability_and_expose_failure()
                 .probability,
             Some(0.9)
         );
-        assert!(
-            report
-                .errors
+        if refusal {
+            assert!(report.errors.is_empty());
+            assert_eq!(report.operation, Operation::Completed);
+            let single_context_retries = server
+                .bodies()
                 .iter()
-                .any(|error| error.code == if refusal { "provider_refusal" } else { "http" })
-        );
-        assert_eq!(report.operation, Operation::Incomplete);
+                .filter(|body| {
+                    let request: Value = serde_json::from_slice(body).unwrap();
+                    has_context(&request)
+                        && request["questions"].as_array().unwrap().len() == 1
+                        && request["questions"][0]["name"] == "w1"
+                })
+                .count();
+            assert!(single_context_retries >= 1);
+            assert!(
+                report
+                    .judgment_events
+                    .iter()
+                    .filter(|e| e.name == "w1" && e.probability.is_none())
+                    .count()
+                    >= 2
+            );
+            assert!(
+                report
+                    .judgment_events
+                    .iter()
+                    .any(|e| e.name == "w1" && e.donor.as_deref() == Some("w0"))
+            );
+        } else {
+            assert!(report.errors.iter().any(|error| error.code == "http"));
+            assert_eq!(report.operation, Operation::Incomplete);
+        }
     }
 }
 
@@ -1786,8 +1902,9 @@ async fn related_success_cannot_erase_initial_refusal_or_grow_donors() {
             .probability,
         Some(0.1)
     );
-    assert!(report.errors.iter().any(|e| e.code == "provider_refusal"));
-    assert_eq!(report.operation, Operation::Incomplete);
+    assert!(report.errors.is_empty());
+    assert_eq!(report.operation, Operation::Completed);
+    assert_eq!(server.bodies().len(), 3);
 }
 
 #[test]

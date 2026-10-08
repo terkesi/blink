@@ -623,6 +623,7 @@ async fn execute_with_policy(
     let mut retries = 0;
     let mut pending_errors = Vec::new();
     let mut sent = BTreeSet::new();
+    let mut refusal_retried = BTreeSet::new();
     let mut probabilities = BTreeMap::new();
     let mut judgment_events = Vec::new();
     let mut checked = BTreeSet::new();
@@ -849,26 +850,62 @@ async fn execute_with_policy(
                             }
                             continue;
                         }
-                        if matches!(job.purpose, Purpose::Source(_)) && judgments.iter().any(|judgment| judgment.probability.is_none()) {
-                            errors.push(SearchError { code: "provider_refusal", status: None });
-                        }
+                        let mut refused = Vec::new();
                         for judgment in judgments {
                             let index = judgment.name.strip_prefix('w').and_then(|name| name.parse::<usize>().ok()).expect("provider validates batch names");
                             let donor = match &job.purpose { Purpose::Related { donor, .. } => Some(format!("w{donor}")), _ => None };
                             judgment_events.push(JudgmentEvent { name: judgment.name, donor, probability: judgment.probability });
-                            if matches!(job.purpose, Purpose::Related { .. }) && judgment.probability.is_none() {
-                                errors.push(SearchError { code: "provider_refusal", status: None });
+                            let Some(probability) = judgment.probability else {
+                                probabilities.entry(index).or_insert(None);
+                                if refusal_retried.insert(index) {
+                                    refused.push(index);
+                                }
                                 continue;
-                            }
-                            probabilities.insert(index, judgment.probability);
+                            };
+                            probabilities.insert(index, Some(probability));
                             let file = prepared.windows[index].file;
-                            if judgment.probability.is_some_and(|p| p >= options.threshold) && checked.insert(file) {
+                            if probability >= options.threshold && checked.insert(file) {
                                 match prepared.snapshot.recheck(file, &mut { &control }) {
                                     Ok(true) => { fresh.insert(file); }
                                     Ok(false) => changed_files.push(prepared.snapshot.files()[file].path().into()),
                                     Err(_) => errors.push(SearchError { code: "source_recheck", status: None }),
                                 }
                             }
+                        }
+                        for index in refused {
+                            let name = format!("w{index}");
+                            let window = candidate(&prepared, index, &name);
+                            let (batch, purpose) = match &job.purpose {
+                                Purpose::Related { donor, .. } => {
+                                    let donor_name = format!("w{donor}");
+                                    let evidence = candidate(&prepared, *donor, &donor_name);
+                                    (
+                                        Batch::encode_with_context(
+                                            &query,
+                                            std::slice::from_ref(&window),
+                                            &evidence,
+                                        )
+                                        .ok()
+                                        .flatten(),
+                                        Purpose::Related {
+                                            targets: vec![index],
+                                            donor: *donor,
+                                        },
+                                    )
+                                }
+                                _ => (
+                                    Batch::encode(&query, std::slice::from_ref(&window)).ok(),
+                                    Purpose::Source(vec![index]),
+                                ),
+                            };
+                            let Some(batch) = batch else { continue };
+                            queue.push_back(Job {
+                                batch,
+                                purpose,
+                                pending_retry: None,
+                                ready: tokio::time::Instant::now(),
+                            });
+                            queue.make_contiguous().sort_by_key(|job| job.ready);
                         }
                     }
                     outcome => {
