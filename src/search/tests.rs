@@ -2228,6 +2228,7 @@ fn callee_plan_adds_unplanned_unaccepted_definitions_with_their_best_caller() {
             donor: 0,
         },
         pending_retry: None,
+        refusal_retry: false,
         ready: tokio::time::Instant::now(),
     }]);
     assert_eq!(plan(&planned), [(6, vec![7]), (8, vec![9])]);
@@ -2558,4 +2559,41 @@ async fn callee_jobs_skip_donors_retracted_by_shared_word_jobs() {
             .iter()
             .all(|request| !question_names(request).contains(&"w2".to_owned()))
     );
+}
+
+#[tokio::test]
+async fn refusal_retry_uses_headroom_instead_of_fresh_slots() {
+    let server = Server::new(|request, _| {
+        let mut reply = Reply::scores(request, 0.9);
+        if !has_context(request) && request["questions"].as_array().unwrap().len() > 1 {
+            for answer in reply.body["answers"].as_array_mut().unwrap() {
+                if answer["name"] == "w5" {
+                    *answer = json!({"type": "refusal", "name": "w5", "reason": "safe refusal"});
+                }
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&retry_headroom_fixture(), &server, Options::default()).await;
+    let requests: Vec<Value> = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice(body).unwrap())
+        .collect();
+    let initial: Vec<_> = requests.iter().filter(|r| !has_context(r)).collect();
+    assert_eq!(initial.len(), 9);
+    assert_eq!(question_names(initial[8]), ["w5"]);
+    assert_eq!(
+        initial
+            .iter()
+            .filter(|r| question_names(r).len() == 8)
+            .count(),
+        6
+    );
+    assert_eq!(requests.len() - initial.len(), 7);
+    assert_eq!(report.budgets.attempts, 16);
+    assert_eq!(report.budgets.retries, 1);
+    assert!(report.errors.is_empty());
+    assert_eq!(report.coverage.windows_refused, 0);
 }

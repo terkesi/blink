@@ -467,6 +467,7 @@ struct Job {
     batch: Batch,
     purpose: Purpose,
     pending_retry: Option<usize>,
+    refusal_retry: bool,
     ready: tokio::time::Instant,
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -583,6 +584,7 @@ async fn execute_with_policy(
     let mut initial_state = None;
     let mut related_sent = false;
     let mut callee_queue = VecDeque::new();
+    let mut refused_queue = VecDeque::new();
     let started = Instant::now();
     let deadline = started + options.timeout;
     let control = || {
@@ -603,6 +605,7 @@ async fn execute_with_policy(
             batch,
             purpose: Purpose::Route(ids),
             pending_retry: None,
+            refusal_retry: false,
             ready: tokio::time::Instant::now(),
         })),
         Err(error) => errors.push(SearchError {
@@ -673,6 +676,7 @@ async fn execute_with_policy(
                         batch,
                         purpose: Purpose::Source(indices),
                         pending_retry: None,
+                        refusal_retry: false,
                         ready: now,
                     },
                     Err(error) => {
@@ -701,7 +705,7 @@ async fn execute_with_policy(
                     continue;
                 }
             }
-            let admission = if job.pending_retry.is_some() {
+            let admission = if job.pending_retry.is_some() || job.refusal_retry {
                 actual_policy
             } else {
                 admission
@@ -730,7 +734,7 @@ async fn execute_with_policy(
             };
             used = reservation;
             related_sent |= matches!(job.purpose, Purpose::Related { .. });
-            retries += usize::from(job.pending_retry.is_some());
+            retries += usize::from(job.pending_retry.is_some() || job.refusal_retry);
             match &job.purpose {
                 Purpose::Source(indices)
                 | Purpose::Related {
@@ -756,6 +760,10 @@ async fn execute_with_policy(
             });
         }
         if tasks.is_empty() && queue.is_empty() && source_exhausted {
+            if !refused_queue.is_empty() {
+                queue = std::mem::take(&mut refused_queue);
+                continue;
+            }
             if phase == Phase::Initial && !options.thorough {
                 phase = Phase::Related;
                 initial_state = Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
@@ -899,13 +907,13 @@ async fn execute_with_policy(
                                 ),
                             };
                             let Some(batch) = batch else { continue };
-                            queue.push_back(Job {
+                            refused_queue.push_back(Job {
                                 batch,
                                 purpose,
                                 pending_retry: None,
+                                refusal_retry: true,
                                 ready: tokio::time::Instant::now(),
                             });
-                            queue.make_contiguous().sort_by_key(|job| job.ready);
                         }
                     }
                     outcome => {
