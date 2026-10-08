@@ -394,7 +394,7 @@ fn related_evidence_keeps_control_questions_and_bounds_escaped_growth() {
         start_line: 2,
         end_line: 2,
     };
-    let contextual = Batch::encode_with_context("behavior", &targets, &evidence)
+    let contextual = Batch::encode_with_context("behavior", &targets, &evidence, 4096)
         .unwrap()
         .unwrap();
     let context: Value = serde_json::from_slice(&contextual.body).unwrap();
@@ -410,7 +410,7 @@ fn related_evidence_keeps_control_questions_and_bounds_escaped_growth() {
         ..evidence
     };
     assert!(
-        Batch::encode_with_context("behavior", &targets, &evidence)
+        Batch::encode_with_context("behavior", &targets, &evidence, 4096)
             .unwrap()
             .is_none()
     );
@@ -418,5 +418,5 @@ fn related_evidence_keeps_control_questions_and_bounds_escaped_growth() {
         path: "../outside.rs",
         ..evidence
     };
-    assert!(Batch::encode_with_context("behavior", &targets, &invalid).is_err());
+    assert!(Batch::encode_with_context("behavior", &targets, &invalid, 4096).is_err());
 }

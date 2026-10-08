@@ -1473,6 +1473,10 @@ fn related_fixture_two_targets() -> TempDir {
     fs::write(root.path().join("c.rs"), "distinctive_helper other_name\n").unwrap();
     root
 }
+fn evidence_donor(request: &Value) -> bool {
+    let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+    input["related_source"]["name"].as_str() == Some("evidence")
+}
 fn has_context(request: &Value) -> bool {
     request["questions"][0]["instructions"]
         .as_str()
@@ -1523,8 +1527,8 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
         );
-        assert_eq!(report.budgets.max_attempts, 20);
-        assert_eq!(report.budgets.max_encoded_request_bytes, 736 * 1024);
+        assert_eq!(report.budgets.max_attempts, 22);
+        assert_eq!(report.budgets.max_encoded_request_bytes, 768 * 1024);
         let events: Vec<_> = report
             .judgment_events
             .iter()
@@ -1903,11 +1907,17 @@ async fn related_success_cannot_erase_initial_refusal_or_grow_donors() {
             .find(|j| j.name == "w2")
             .unwrap()
             .probability,
-        Some(0.1)
+        Some(0.9)
+    );
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .any(|e| e.name == "w2" && e.donor.as_deref() == Some("evidence"))
     );
     assert!(report.errors.is_empty());
     assert_eq!(report.operation, Operation::Completed);
-    assert_eq!(server.bodies().len(), 3);
+    assert_eq!(server.bodies().len(), 4);
 }
 
 #[test]
@@ -2026,7 +2036,7 @@ async fn retry_headroom_success_body_receipt() {
 
 #[tokio::test]
 async fn late_related_retries_use_unspent_follow_up_and_headroom_with_exact_bodies() {
-    for failures in [1, 5] {
+    for failures in [1, 8] {
         let server = Server::new(move |request, number| {
             if (17 - failures..=16).contains(&number) {
                 Reply::status(503)
@@ -2037,9 +2047,9 @@ async fn late_related_retries_use_unspent_follow_up_and_headroom_with_exact_bodi
         .await;
         let report = run(&retry_headroom_fixture(), &server, Options::default()).await;
         let bodies = server.bodies();
-        assert_eq!(bodies.len(), 16 + failures.min(4));
-        assert_eq!(report.budgets.retries, failures.min(4));
-        assert!(report.budgets.encoded_request_bytes <= 736 * 1024);
+        assert_eq!(bodies.len(), 16 + failures.min(6));
+        assert_eq!(report.budgets.retries, failures.min(6));
+        assert!(report.budgets.encoded_request_bytes <= 768 * 1024);
         assert_eq!(
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
@@ -2266,7 +2276,7 @@ async fn callee_jobs_follow_the_unchanged_shared_word_jobs() {
         .bodies()
         .iter()
         .map(|body| serde_json::from_slice(body).unwrap())
-        .filter(has_context)
+        .filter(|request| has_context(request) && !evidence_donor(request))
         .collect();
     assert_eq!(related.len(), 9);
     let names = |request: &Value| -> Vec<String> {
@@ -2283,7 +2293,7 @@ async fn callee_jobs_follow_the_unchanged_shared_word_jobs() {
             .all(|request| !names(request).contains(&"w100".to_owned()))
     );
     assert_eq!(names(&related[8]), ["w100"]);
-    assert_eq!(report.budgets.attempts, 17);
+    assert_eq!(report.budgets.attempts, 19);
     assert_eq!(
         report
             .judgment_events
@@ -2475,7 +2485,7 @@ async fn callee_deadline_keeps_completed_shared_word_results() {
         Source::open(root.path()).unwrap(),
         "helper".into(),
         Options {
-            timeout: Duration::from_secs(3),
+            timeout: Duration::from_secs(4),
             ..Options::default()
         },
         server.provider(),
@@ -2554,7 +2564,7 @@ async fn callee_jobs_skip_donors_retracted_by_shared_word_jobs() {
         .bodies()
         .iter()
         .map(|body| serde_json::from_slice(body).unwrap())
-        .filter(has_context)
+        .filter(|request| has_context(request) && !evidence_donor(request))
         .collect();
     assert!(!related.is_empty());
     assert!(
@@ -2716,4 +2726,185 @@ async fn refusal_retry_skips_a_donor_the_follow_up_rejected() {
         let request: Value = serde_json::from_slice(body).unwrap();
         question_names(&request) != ["w2"]
     }));
+}
+
+fn evidence_fixture_server(
+    evidence_score: f64,
+) -> impl Fn(&Value, usize) -> Reply + Send + Sync + 'static {
+    move |request, _| {
+        if evidence_donor(request) {
+            Reply::scores(request, evidence_score)
+        } else if has_context(request) {
+            Reply::scores(request, 0.1)
+        } else {
+            initial_related_scores(request, 0.1)
+        }
+    }
+}
+
+#[tokio::test]
+async fn evidence_pass_accepts_previously_rejected_helper_with_fresh_hash() {
+    let root = related_fixture();
+    let server = Server::new(evidence_fixture_server(0.9)).await;
+    let report = run(&root, &server, Options::default()).await;
+    let helper = report
+        .results
+        .iter()
+        .find(|record| record.path == "b.rs")
+        .expect("evidence pass accepts the rejected helper");
+    let expected = format!(
+        "{:x}",
+        Sha256::digest(fs::read(root.path().join("b.rs")).unwrap())
+    );
+    assert_eq!(helper.sha256, expected);
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|judgment| judgment.name == "w1")
+            .unwrap()
+            .probability,
+        Some(0.9)
+    );
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .any(|event| event.name == "w1" && event.donor.as_deref() == Some("evidence"))
+    );
+}
+
+#[tokio::test]
+async fn evidence_request_carries_accepted_excerpts_with_headers_within_cap() {
+    let root = related_fixture();
+    let server = Server::new(evidence_fixture_server(0.1)).await;
+    run(&root, &server, Options::default()).await;
+    let requests: Vec<Value> = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice(body).unwrap())
+        .filter(evidence_donor)
+        .collect();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert!(request["questions"].as_array().unwrap().len() <= EVIDENCE_BATCH);
+    let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+    let related = &input["related_source"];
+    assert_eq!(related["name"].as_str().unwrap(), "evidence");
+    assert_eq!(related["path"].as_str().unwrap(), "a.rs");
+    let text = related["text"].as_str().unwrap();
+    assert!(text.len() <= EVIDENCE_BYTES);
+    assert!(text.contains("// a.rs:1-1\nfn caller() { distinctive_helper(); }"));
+    assert!(!text.contains("b.rs"));
+}
+
+#[tokio::test]
+async fn no_evidence_phase_without_accepted_windows() {
+    let root = related_fixture();
+    let server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+    let report = run(&root, &server, Options::default()).await;
+    assert!(report.results.is_empty());
+    assert!(
+        server
+            .bodies()
+            .iter()
+            .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+            .all(|request| !evidence_donor(&request) && !has_context(&request))
+    );
+}
+
+#[tokio::test]
+async fn evidence_deadline_keeps_callee_and_shared_word_results() {
+    let server = Server::new(|request, _| {
+        if evidence_donor(request) {
+            let mut reply = Reply::scores(request, 0.9);
+            reply.delay = Duration::from_secs(10);
+            reply
+        } else if has_context(request) {
+            Reply::scores(request, 0.9)
+        } else {
+            initial_related_scores(request, 0.1)
+        }
+    })
+    .await;
+    let root = callee_fixture();
+    let report = execute_with_policy(
+        Source::open(root.path()).unwrap(),
+        "helper".into(),
+        Options {
+            timeout: Duration::from_secs(4),
+            ..Options::default()
+        },
+        server.provider(),
+        Arc::new(AtomicBool::new(false)),
+        Policy {
+            max_attempts: 8,
+            max_bytes: 256 * 1024,
+            attempt_timeout: Duration::from_secs(2),
+        },
+    )
+    .await;
+    let evidence_sent = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+        .any(|request| evidence_donor(&request));
+    assert!(evidence_sent);
+    assert!(report.budgets.stops.contains(&"deadline"));
+    assert_eq!(
+        report
+            .raw_judgments
+            .iter()
+            .find(|judgment| judgment.name == "w100")
+            .map(|judgment| judgment.probability),
+        Some(Some(0.9)),
+        "callee-phase acceptance survives the evidence deadline"
+    );
+    assert!(
+        report
+            .results
+            .iter()
+            .any(|record| record.path.ends_with(".rs") && record.path != "f000.rs"),
+        "shared-identifier acceptance survives the evidence deadline"
+    );
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .all(|event| event.donor.as_deref() != Some("evidence")),
+        "evidence judgments roll back to the evidence-phase restore point"
+    );
+}
+
+#[tokio::test]
+async fn below_threshold_evidence_judgment_does_not_retract_accepted_window() {
+    let root = related_fixture();
+    let server = Server::new(evidence_fixture_server(0.1)).await;
+    let report = run(&root, &server, Options::default()).await;
+    assert!(
+        report.results.iter().any(|record| record.path == "a.rs"),
+        "accepted window survives a low evidence judgment"
+    );
+    assert!(!report.results.iter().any(|record| record.path == "b.rs"));
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .any(|event| event.donor.as_deref() == Some("evidence")
+                && event.probability == Some(0.1))
+    );
+}
+
+#[tokio::test]
+async fn thorough_mode_sends_no_evidence_request() {
+    let root = related_fixture();
+    let server = Server::new(|request, _| Reply::scores(request, 0.9)).await;
+    run(&root, &server, Options::thorough()).await;
+    assert!(
+        server
+            .bodies()
+            .iter()
+            .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+            .all(|request| !has_context(&request))
+    );
 }

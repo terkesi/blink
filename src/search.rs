@@ -1,5 +1,6 @@
 mod bounds;
 mod callees;
+mod evidence;
 mod navigation;
 mod related;
 
@@ -24,6 +25,11 @@ const BATCH_SIZE: usize = 8;
 const CONCURRENCY: usize = 4;
 const CALLEE_JOBS: usize = 2;
 const CALLEE_BYTES: usize = 96 * 1024;
+const EVIDENCE_JOBS: usize = 2;
+const EVIDENCE_BATCH: usize = 4;
+const EVIDENCE_BYTES: usize = 12 * 1024;
+const EVIDENCE_LIMIT: usize = EVIDENCE_BYTES + 4096;
+const EVIDENCE_ALLOWANCE: usize = 32 * 1024;
 const INCLUDE_RELATED_EVIDENCE: bool = true;
 
 #[derive(Clone, Debug)]
@@ -460,6 +466,7 @@ enum Purpose {
     Route(Vec<usize>),
     Source(Vec<usize>),
     Related { targets: Vec<usize>, donor: usize },
+    Evidence { targets: Vec<usize> },
 }
 
 #[derive(Clone)]
@@ -475,6 +482,7 @@ enum Phase {
     Initial,
     Related,
     Callee,
+    Evidence,
 }
 
 enum Attempt {
@@ -566,8 +574,8 @@ async fn execute_with_policy(
         policy
     } else {
         Policy {
-            max_attempts: policy.max_attempts + CALLEE_JOBS,
-            max_bytes: policy.max_bytes + CALLEE_BYTES,
+            max_attempts: policy.max_attempts + CALLEE_JOBS + EVIDENCE_JOBS,
+            max_bytes: policy.max_bytes + CALLEE_BYTES + EVIDENCE_ALLOWANCE,
             ..policy
         }
     };
@@ -626,8 +634,11 @@ async fn execute_with_policy(
     let mut retries = 0;
     let mut pending_errors = Vec::new();
     let mut sent = BTreeSet::new();
+    let mut followup_targets = BTreeSet::new();
     let mut refusal_retried = BTreeSet::new();
     let mut probabilities = BTreeMap::new();
+    let mut best_scores = BTreeMap::new();
+    let mut evidence_card: Option<(String, String, usize, usize)> = None;
     let mut judgment_events = Vec::new();
     let mut checked = BTreeSet::new();
     let mut fresh = BTreeSet::new();
@@ -736,12 +747,16 @@ async fn execute_with_policy(
             related_sent |= matches!(job.purpose, Purpose::Related { .. });
             retries += usize::from(job.pending_retry.is_some() || job.refusal_retry);
             match &job.purpose {
-                Purpose::Source(indices)
-                | Purpose::Related {
+                Purpose::Source(indices) | Purpose::Evidence { targets: indices } => {
+                    selected.extend(indices.iter().copied());
+                    sent.extend(indices.iter().copied());
+                }
+                Purpose::Related {
                     targets: indices, ..
                 } => {
                     selected.extend(indices.iter().copied());
                     sent.extend(indices.iter().copied());
+                    followup_targets.extend(indices.iter().copied());
                 }
                 Purpose::Route(_) => {}
             }
@@ -840,6 +855,33 @@ async fn execute_with_policy(
                 });
                 continue;
             }
+            if matches!(phase, Phase::Related | Phase::Callee)
+                && tokio::time::Instant::now() + policy.attempt_timeout
+                    <= tokio::time::Instant::from_std(deadline)
+            {
+                let planned = evidence::plan(
+                    &prepared,
+                    &query,
+                    &probabilities,
+                    &best_scores,
+                    &fresh,
+                    &followup_targets,
+                    options.threshold,
+                    used,
+                    followup,
+                    &mut { &control },
+                );
+                if let Some((card, jobs)) = planned
+                    && !jobs.is_empty()
+                {
+                    evidence_card = Some(card);
+                    phase = Phase::Evidence;
+                    initial_state =
+                        Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
+                    queue = jobs;
+                    continue;
+                }
+            }
             break;
         }
         let wake = if tasks.len() < CONCURRENCY {
@@ -880,7 +922,7 @@ async fn execute_with_policy(
                         let mut refused = Vec::new();
                         for judgment in judgments {
                             let index = judgment.name.strip_prefix('w').and_then(|name| name.parse::<usize>().ok()).expect("provider validates batch names");
-                            let donor = match &job.purpose { Purpose::Related { donor, .. } => Some(format!("w{donor}")), _ => None };
+                            let donor = match &job.purpose { Purpose::Related { donor, .. } => Some(format!("w{donor}")), Purpose::Evidence { .. } => Some("evidence".to_owned()), _ => None };
                             judgment_events.push(JudgmentEvent { name: judgment.name, donor, probability: judgment.probability });
                             let Some(probability) = judgment.probability else {
                                 probabilities.entry(index).or_insert(None);
@@ -890,6 +932,10 @@ async fn execute_with_policy(
                                 continue;
                             };
                             probabilities.insert(index, Some(probability));
+                            let best = best_scores.entry(index).or_insert(probability);
+                            if probability > *best {
+                                *best = probability;
+                            }
                             let file = prepared.windows[index].file;
                             if probability >= options.threshold && checked.insert(file) {
                                 match prepared.snapshot.recheck(file, &mut { &control }) {
@@ -900,7 +946,9 @@ async fn execute_with_policy(
                             }
                         }
                         let asked_alone = match &job.purpose {
-                            Purpose::Related { targets, .. } => targets.len() == 1,
+                            Purpose::Related { targets, .. } | Purpose::Evidence { targets } => {
+                                targets.len() == 1
+                            }
                             Purpose::Source(indices) => indices.len() == 1,
                             _ => true,
                         };
@@ -916,6 +964,7 @@ async fn execute_with_policy(
                                             &query,
                                             std::slice::from_ref(&window),
                                             &evidence,
+                                            4096,
                                         )
                                         .ok()
                                         .flatten(),
@@ -925,6 +974,30 @@ async fn execute_with_policy(
                                         },
                                     )
                                 }
+                                Purpose::Evidence { .. } => (
+                                    evidence_card
+                                        .as_ref()
+                                        .and_then(|(text, path, start_line, end_line)| {
+                                            let evidence = Candidate {
+                                                name: "evidence",
+                                                path,
+                                                text,
+                                                start_line: *start_line,
+                                                end_line: *end_line,
+                                            };
+                                            Batch::encode_with_context(
+                                                &query,
+                                                std::slice::from_ref(&window),
+                                                &evidence,
+                                                EVIDENCE_LIMIT,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                        }),
+                                    Purpose::Evidence {
+                                        targets: vec![index],
+                                    },
+                                ),
                                 _ => (
                                     Batch::encode(&query, std::slice::from_ref(&window)).ok(),
                                     Purpose::Source(vec![index]),

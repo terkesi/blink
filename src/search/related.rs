@@ -134,7 +134,7 @@ pub(super) fn plan(
                     })
                     .collect();
                 if let Ok(Some(contextual)) =
-                    Batch::encode_with_context(query, &candidates, &evidence)
+                    Batch::encode_with_context(query, &candidates, &evidence, 4096)
                 {
                     let contextual_len = contextual.encoded_len();
                     let batch = if INCLUDE_RELATED_EVIDENCE {

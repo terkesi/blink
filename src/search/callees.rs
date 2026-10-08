@@ -129,7 +129,7 @@ pub(super) fn plan(
             let name = format!("w{index}");
             let card = candidate(prepared, index, &name);
             matches!(
-                Batch::encode_with_context(query, std::slice::from_ref(&card), &card),
+                Batch::encode_with_context(query, std::slice::from_ref(&card), &card, 4096),
                 Ok(Some(_))
             )
             .then(|| (index, p, calls(text(index))))
@@ -214,7 +214,7 @@ pub(super) fn plan(
                             .zip(&names)
                             .map(|(&(_, index), name)| candidate(prepared, index, name))
                             .collect();
-                        Batch::encode_with_context(query, &cards, &evidence)
+                        Batch::encode_with_context(query, &cards, &evidence, 4096)
                             .ok()
                             .flatten()
                             .map(|contextual| {

@@ -74,11 +74,12 @@ impl Batch {
         query: &str,
         candidates: &[Candidate<'_>],
         donor: &Candidate<'_>,
+        max_extra: usize,
     ) -> Result<Option<Self>, Failure> {
         Self::encode(query, std::slice::from_ref(donor))?;
         let plain = Self::encode(query, candidates)?;
         let contextual = Self::encode_with(query, candidates, false, Some(donor), true)?;
-        Ok((contextual.encoded_len() - plain.encoded_len() <= 4096).then_some(contextual))
+        Ok((contextual.encoded_len() - plain.encoded_len() <= max_extra).then_some(contextual))
     }
 
     pub(crate) fn encode_related_control(
