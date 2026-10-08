@@ -1,6 +1,6 @@
 use super::*;
 
-type Card = (String, String, usize, usize);
+pub(super) type Card = (String, String, usize, usize, BTreeSet<usize>);
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
@@ -15,46 +15,79 @@ pub(super) fn plan(
     policy: Policy,
     control: &mut dyn FnMut() -> Control,
 ) -> Option<(Card, VecDeque<Job>)> {
-    let mut accepted: Vec<(usize, f64)> = probabilities
+    let accepted: Vec<(usize, f64)> = probabilities
         .iter()
         .filter_map(|(&index, &probability)| {
-            probability.filter(|&p| p >= threshold).map(|p| (index, p))
+            probability
+                .filter(|&p| p >= threshold && fresh.contains(&prepared.windows[index].file))
+                .map(|p| (index, p))
         })
         .collect();
-    accepted.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     if accepted.is_empty() {
         return None;
     }
-    let records = merge(prepared, &accepted, fresh);
-    let mut text = String::new();
-    for record in &records {
-        let excerpt = format!(
-            "// {}:{}-{}\n{}",
-            record.path, record.start_line, record.end_line, record.excerpt
-        );
-        let separator = usize::from(!text.is_empty());
-        if text.len() + separator + excerpt.len() > EVIDENCE_BYTES {
+    let mut records = merge(prepared, &accepted, fresh);
+    records.sort_by(|a, b| {
+        b.probability
+            .total_cmp(&a.probability)
+            .then(a.path.cmp(&b.path))
+            .then(a.start_byte.cmp(&b.start_byte))
+    });
+    let excerpts: Vec<String> = records
+        .iter()
+        .map(|record| {
+            format!(
+                "// {}:{}-{}\n{}",
+                record.path, record.start_line, record.end_line, record.excerpt
+            )
+        })
+        .collect();
+    let mut kept = 0;
+    let mut length = 0;
+    for excerpt in &excerpts {
+        if length + usize::from(kept > 0) + excerpt.len() > EVIDENCE_BYTES {
             break;
         }
-        if separator == 1 {
-            text.push('\n');
-        }
-        text.push_str(&excerpt);
+        length += usize::from(kept > 0) + excerpt.len();
+        kept += 1;
     }
-    if text.is_empty() {
-        let record = records.first()?;
-        let excerpt = format!(
-            "// {}:{}-{}\n{}",
-            record.path, record.start_line, record.end_line, record.excerpt
+    let card_text = |kept: usize| -> String {
+        if kept == 0 {
+            let excerpt = &excerpts[0];
+            let mut end = EVIDENCE_BYTES.min(excerpt.len());
+            while !excerpt.is_char_boundary(end) {
+                end -= 1;
+            }
+            return excerpt[..end].to_owned();
+        }
+        excerpts[..kept].join("\n")
+    };
+    let top = &records[0];
+    let probe = candidate(prepared, accepted[0].0, "probe");
+    let mut text = card_text(kept);
+    loop {
+        let evidence = Candidate {
+            name: "evidence",
+            path: &top.path,
+            text: &text,
+            start_line: top.start_line,
+            end_line: top.end_line,
+        };
+        let fits = matches!(
+            Batch::encode_with_context(
+                query,
+                std::slice::from_ref(&probe),
+                &evidence,
+                EVIDENCE_LIMIT
+            ),
+            Ok(Some(_))
         );
-        let mut end = EVIDENCE_BYTES.min(excerpt.len());
-        while !excerpt.is_char_boundary(end) {
-            end -= 1;
+        if fits || kept == 0 {
+            break;
         }
-        text = excerpt[..end].to_owned();
+        kept -= 1;
+        text = card_text(kept);
     }
-    let top = records.first().expect("nonempty evidence");
-    let card = (text.clone(), top.path.clone(), top.start_line, top.end_line);
     let evidence = Candidate {
         name: "evidence",
         path: &top.path,
@@ -66,6 +99,13 @@ pub(super) fn plan(
         .iter()
         .map(|&(index, _)| prepared.windows[index].file)
         .collect();
+    let card = (
+        text.clone(),
+        top.path.clone(),
+        top.start_line,
+        top.end_line,
+        accepted_files.clone(),
+    );
     let mut targets: Vec<(u8, usize, usize, f64)> = Vec::new();
     for (&index, &score) in best {
         if control() != Control::Continue {

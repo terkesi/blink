@@ -638,7 +638,7 @@ async fn execute_with_policy(
     let mut refusal_retried = BTreeSet::new();
     let mut probabilities = BTreeMap::new();
     let mut best_scores = BTreeMap::new();
-    let mut evidence_card: Option<(String, String, usize, usize)> = None;
+    let mut evidence_card: Option<evidence::Card> = None;
     let mut judgment_events = Vec::new();
     let mut checked = BTreeSet::new();
     let mut fresh = BTreeSet::new();
@@ -701,9 +701,16 @@ async fn execute_with_policy(
             } else {
                 break;
             };
-            if let Purpose::Related { donor, .. } = &job.purpose {
-                let file = prepared.windows[*donor].file;
-                if !fresh.contains(&file)
+            let context_files: Vec<usize> = match &job.purpose {
+                Purpose::Related { donor, .. } => vec![prepared.windows[*donor].file],
+                Purpose::Evidence { .. } => evidence_card
+                    .as_ref()
+                    .map(|card| card.4.iter().copied().collect())
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if context_files.iter().any(|&file| {
+                !fresh.contains(&file)
                     || !related::recheck(
                         &mut prepared,
                         file,
@@ -712,9 +719,8 @@ async fn execute_with_policy(
                         &mut errors,
                         &mut { &control },
                     )
-                {
-                    continue;
-                }
+            }) {
+                continue;
             }
             let admission = if job.pending_retry.is_some() || job.refusal_retry {
                 actual_policy
@@ -744,7 +750,10 @@ async fn execute_with_policy(
                 continue;
             };
             used = reservation;
-            related_sent |= matches!(job.purpose, Purpose::Related { .. });
+            related_sent |= matches!(
+                job.purpose,
+                Purpose::Related { .. } | Purpose::Evidence { .. }
+            );
             retries += usize::from(job.pending_retry.is_some() || job.refusal_retry);
             match &job.purpose {
                 Purpose::Source(indices) | Purpose::Evidence { targets: indices } => {
@@ -977,7 +986,7 @@ async fn execute_with_policy(
                                 Purpose::Evidence { .. } => (
                                     evidence_card
                                         .as_ref()
-                                        .and_then(|(text, path, start_line, end_line)| {
+                                        .and_then(|(text, path, start_line, end_line, _)| {
                                             let evidence = Candidate {
                                                 name: "evidence",
                                                 path,

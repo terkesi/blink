@@ -2897,14 +2897,142 @@ async fn below_threshold_evidence_judgment_does_not_retract_accepted_window() {
 
 #[tokio::test]
 async fn thorough_mode_sends_no_evidence_request() {
+    for thorough in [false, true] {
+        let root = related_fixture();
+        let server = Server::new(|request, _| initial_related_scores(request, 0.1)).await;
+        let options = if thorough {
+            Options::thorough()
+        } else {
+            Options::default()
+        };
+        run(&root, &server, options).await;
+        let evidence_requests = server
+            .bodies()
+            .iter()
+            .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+            .filter(evidence_donor)
+            .count();
+        assert_eq!(evidence_requests > 0, !thorough);
+    }
+}
+
+fn evidence_card_for(
+    root: &TempDir,
+    accepted: &[(usize, f64)],
+    rejected: &[usize],
+) -> Option<evidence::Card> {
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let mut probabilities: BTreeMap<usize, Option<f64>> = accepted
+        .iter()
+        .map(|&(index, p)| (index, Some(p)))
+        .collect();
+    let mut best: BTreeMap<usize, f64> = accepted.iter().copied().collect();
+    for &index in rejected {
+        probabilities.insert(index, Some(0.1));
+        best.insert(index, 0.1);
+    }
+    let fresh: BTreeSet<usize> = (0..prepared.snapshot.files().len()).collect();
+    evidence::plan(
+        &prepared,
+        "behavior",
+        &probabilities,
+        &best,
+        &fresh,
+        &BTreeSet::new(),
+        0.5,
+        Reservation {
+            attempts: 18,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 22,
+            max_bytes: 768 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    )
+    .map(|(card, _)| card)
+}
+
+#[test]
+fn evidence_card_merges_in_file_order_then_ranks_by_probability() {
+    let root = fixture(0);
+    let lines: String = (1..=200).map(|n| format!("line_{n:03}\n")).collect();
+    fs::write(root.path().join("f000.py"), &lines).unwrap();
+    fs::write(root.path().join("f001.py"), "other_file\n").unwrap();
+    let (text, path, start, _, files) =
+        evidence_card_for(&root, &[(0, 0.7), (2, 0.9)], &[1]).unwrap();
+    assert_eq!((path.as_str(), start), ("f000.py", 145));
+    assert!(text.starts_with("// f000.py:145-200\n"));
+    assert!(text.contains("\n// f000.py:1-80\n"));
+    assert_eq!(text.matches("line_050\n").count(), 1);
+    assert_eq!(text.matches("line_150\n").count(), 1);
+    assert_eq!(files, BTreeSet::from([0]));
+    let (text, _, start, end, _) = evidence_card_for(&root, &[(0, 0.7), (1, 0.9)], &[2]).unwrap();
+    assert_eq!((start, end), (1, 152));
+    assert_eq!(text.matches("// f000.py:").count(), 1);
+    assert_eq!(text.matches("line_076\n").count(), 1);
+    assert!(evidence_card_for(&root, &[], &[1]).is_none());
+}
+
+#[test]
+fn evidence_card_shrinks_until_it_encodes() {
+    let root = fixture(0);
+    let noisy: String = (0..60).map(|_| format!("{}\n", "\"".repeat(60))).collect();
+    for index in 0..4 {
+        fs::write(root.path().join(format!("f{index:03}.py")), &noisy).unwrap();
+    }
+    fs::write(root.path().join("f004.py"), "def target():\n    pass\n").unwrap();
+    let accepted: Vec<_> = (0..4)
+        .map(|index| (index, 0.9 - index as f64 * 0.01))
+        .collect();
+    let (text, ..) = evidence_card_for(&root, &accepted, &[4]).unwrap();
+    let headers = text.matches("// f00").count();
+    assert!((1..4).contains(&headers), "kept {headers} excerpts");
+    let probe = Candidate {
+        name: "evidence",
+        path: "f000.py",
+        text: &text,
+        start_line: 1,
+        end_line: 60,
+    };
+    let target = Candidate {
+        name: "w4",
+        path: "f004.py",
+        text: "def target():\n    pass\n",
+        start_line: 1,
+        end_line: 2,
+    };
+    assert!(matches!(
+        Batch::encode_with_context("behavior", &[target], &probe, EVIDENCE_LIMIT),
+        Ok(Some(_))
+    ));
+}
+
+#[tokio::test]
+async fn evidence_request_is_skipped_when_a_card_file_changed() {
     let root = related_fixture();
-    let server = Server::new(|request, _| Reply::scores(request, 0.9)).await;
-    run(&root, &server, Options::thorough()).await;
+    let path = root.path().join("a.rs");
+    let server = Server::new(move |request, _| {
+        if !has_context(request) {
+            return initial_related_scores(request, 0.1);
+        }
+        fs::write(&path, "changed source\n").unwrap();
+        Reply::scores(request, 0.1)
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    assert_eq!(report.changed_files, ["a.rs"]);
     assert!(
         server
             .bodies()
             .iter()
             .map(|body| serde_json::from_slice::<Value>(body).unwrap())
-            .all(|request| !has_context(&request))
+            .all(|request| !evidence_donor(&request))
     );
 }
