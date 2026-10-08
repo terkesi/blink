@@ -43,6 +43,18 @@ Report all-required source completion alongside hit@8. Count source returned for
 
 Release targets are at least 85% hit@8 in default mode, 95% in thorough mode, and at most 5% negative false positives. Multifile completion, attack exposure, and irrelevant returned records require separate assessment. A successful small live example does not establish those targets.
 
+## Generated question sets
+
+`scripts/generate-questions` builds a corpus in the frozen comparison driver's schema from one or more pinned repository checkouts. It inventories eligible files through `blink files ROOT --json`, derives queries from documentation comments (Python docstrings, Rust `///`, JS/TS `/** */`) with the declared symbol name replaced by "this", and labels gold spans as the declaration line plus its first eight body lines. A configurable share of questions adds the first five lines of one uniquely declared callee as a second gold span (`multi_hop`). Negative questions reuse queries generated from a different root and are valid only when the replaced symbol does not appear as an identifier in the target repository. Everything is deterministic from `--seed`; choose a new seed for a fresh set. `scripts/paired-summary` reads the driver's per-trial `trial.json` files, reports per-tool span recall, negative and error counts, and request/byte/time medians, then pairs two tools per question and runs an exact two-sided sign test on strict hits and span recall.
+
+```sh
+scripts/generate-questions --root /path/repo-a --id repo-a --root /path/repo-b --id repo-b \
+    --seed 1 --count 60 --negatives 20 --output /path/corpus/corpus.json --blink target/release/blink
+scripts/paired-summary /path/compare-output-a /path/compare-output-b --tools blink,jg
+```
+
+Repository roots must sit inside the corpus file's directory so relative roots resolve. These queries are doc-derived and easier than hand-written behavioral questions; many share the files their docs describe. Use generated sets for relative comparison between tools and for regression, not for absolute quality claims or release gating. The frozen driver's `--split` flag accepts only `calibration` and `heldout`, so a `generated` split loads through `load_corpus` rather than the driver's CLI.
+
 ## Local preparation benchmark
 
 ```sh

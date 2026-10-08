@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""Generate a question corpus from pinned repository checkouts. Model-free.
+
+Queries come from documentation comments above declarations, with the
+declared symbol name replaced by "this". Gold spans are the declaration
+line through the first eight lines of its body; multi-hop questions also
+require the first five lines of one uniquely declared callee.
+
+The output matches the schema that the frozen comparison driver's
+load_corpus reads: schema_version 1, repositories with relative roots,
+and questions with exact whole-line snippets and SHA-256 digests.
+"""
+import argparse
+import hashlib
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+PY_DECL = re.compile(r'^(?P<indent>[ \t]*)(?:async\s+def|def|class)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)')
+PY_TRIPLE = re.compile(r'^\s*(?:[rubfRUBF]{0,3})("""|\'\'\')')
+RUST_DOC = re.compile(r'^\s*///')
+RUST_DECL = re.compile(
+    r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+|async\s+|const\s+|extern\s+"[^"]*"\s+)*'
+    r'(?:fn|struct|enum|trait)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)')
+JS_DOC_END = re.compile(r'\*/\s*$')
+JS_DECL = re.compile(
+    r'^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?\s+|class\s+'
+    r'|(?:const|let|var)\s+)(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)')
+CALL = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(')
+IDENT = re.compile(r'\b[A-Za-z_][A-Za-z0-9_]*\b')
+WORD = re.compile(r"[A-Za-z0-9']+")
+
+TEXT_EXTENSIONS = {'.py': 'python', '.rs': 'rust', '.ts': 'typescript', '.tsx': 'typescript',
+                   '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript'}
+
+
+def line_starts(raw):
+    return ([0] + [i + 1 for i, b in enumerate(raw) if b == 10 and i + 1 < len(raw)]) if raw else []
+
+
+def span_label(raw, first, last):
+    """Whole-line label fields matching the frozen driver's normalize_span."""
+    starts = line_starts(raw)
+    lines = raw.decode('utf-8').split('\n')
+    text = '\n'.join(lines[first - 1:last])
+    if last < len(starts) or raw.endswith(b'\n'):
+        text += '\n'
+    encoded = text.encode('utf-8')
+    return dict(start_line=first, end_line=last, snippet=text, sha256=hashlib.sha256(encoded).hexdigest())
+
+
+def words(text):
+    return WORD.findall(text)
+
+
+def first_sentences(text, limit=40):
+    """First sentence(s) of doc text, at most `limit` words."""
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    out, count = [], 0
+    for part in parts:
+        n = len(words(part))
+        if count + n > limit and out:
+            break
+        out.append(part)
+        count += n
+        if count >= limit:
+            break
+    return ' '.join(out)
+
+
+def snake(name):
+    return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
+
+
+def camel(name):
+    parts = name.split('_')
+    return parts[0] + ''.join(p.title() for p in parts[1:])
+
+
+def variants(name):
+    forms = {name}
+    if '_' in name:
+        forms.add(camel(name))
+    forms.add(snake(name))
+    return {f for f in forms if f}
+
+
+def replace_symbol(text, name):
+    for form in sorted(variants(name), key=len, reverse=True):
+        text = re.sub(r'\b' + re.escape(form) + r'\b', 'this', text)
+    return text
+
+
+def to_query(doc_text, name):
+    cleaned = replace_symbol(doc_text, name)
+    cleaned = cleaned.strip()
+    if len(words(cleaned)) < 6:
+        return None
+    body = cleaned[0].lower() + cleaned[1:]
+    body = re.sub(r'^this\s+', '', body)
+    body = body.rstrip('.!?')
+    if len(words(body)) < 6:
+        return None
+    return 'Where does this ' + body + '?'
+
+
+def parse_python(lines):
+    """Yield (decl_line, name, doc_text) with 1-based decl_line."""
+    found = []
+    i = 0
+    while i < len(lines):
+        match = PY_DECL.match(lines[i])
+        if not match:
+            i += 1
+            continue
+        # Signature may span lines; it ends at the first line ending in ':'.
+        end = i
+        while end < min(i + 10, len(lines)) and not lines[end].rstrip().endswith(':'):
+            end += 1
+        k = end + 1
+        while k < len(lines) and not lines[k].strip():
+            k += 1
+        if k < len(lines):
+            m = PY_TRIPLE.match(lines[k])
+            if m:
+                quote = m[1]
+                body = lines[k][m.end():]
+                collected = []
+                if quote in body:
+                    collected.append(body[:body.index(quote)])
+                else:
+                    collected.append(body)
+                    k += 1
+                    while k < len(lines):
+                        if quote in lines[k]:
+                            collected.append(lines[k][:lines[k].index(quote)])
+                            break
+                        collected.append(lines[k])
+                        k += 1
+                text = ' '.join(collected).strip()
+                if text:
+                    found.append((i + 1, match['name'], text))
+        i = max(i + 1, end)
+    return found
+
+
+def parse_rust(lines):
+    found = []
+    i = 0
+    while i < len(lines):
+        if RUST_DOC.match(lines[i]):
+            doc_start = i
+            while i < len(lines) and RUST_DOC.match(lines[i]):
+                i += 1
+            while i < len(lines) and (not lines[i].strip() or lines[i].strip().startswith(('#', '//'))):
+                if lines[i].strip().startswith('//') and not lines[i].strip().startswith('///'):
+                    break
+                if not lines[i].strip():
+                    break
+                i += 1
+            if i < len(lines):
+                m = RUST_DECL.match(lines[i])
+                if m:
+                    text = ' '.join(re.sub(r'^\s*///\s?', '', l) for l in lines[doc_start:i]).strip()
+                    if text:
+                        found.append((i + 1, m['name'], text))
+        else:
+            i += 1
+    return found
+
+
+def parse_js(lines):
+    found = []
+    i = 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith('/**'):
+            start = i
+            collected = []
+            while i < len(lines):
+                collected.append(lines[i])
+                if '*/' in lines[i]:
+                    break
+                i += 1
+            i += 1
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            if i < len(lines):
+                m = JS_DECL.match(lines[i])
+                if m:
+                    text = '\n'.join(collected)
+                    text = re.sub(r'/\*\*|\*/', '', text)
+                    text = ' '.join(re.sub(r'^\s*\*\s?', '', l) for l in text.split('\n')).strip()
+                    if text:
+                        found.append((i + 1, m['name'], text))
+        else:
+            i += 1
+    return found
+
+
+PARSERS = {'python': parse_python, 'rust': parse_rust,
+           'typescript': parse_js, 'javascript': parse_js}
+
+
+def declarations(root, rel_path, raw):
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        return []
+    lang = TEXT_EXTENSIONS.get(PurePosixPath(rel_path).suffix)
+    if not lang:
+        return []
+    lines = text.split('\n')
+    return [(decl, name, doc) for decl, name, doc in PARSERS[lang](lines)]
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip())
+
+
+def line_count(raw):
+    return len(line_starts(raw))
+
+
+def body_span(lines, decl_line):
+    """Last line of the gold span: decl line plus up to 8 body lines."""
+    decl = lines[decl_line - 1]
+    base = indent_of(decl)
+    last = decl_line
+    body = 0
+    i = decl_line  # 0-based index of the line after decl
+    while i < len(lines) and body < 8:
+        line = lines[i]
+        if line.strip():
+            if indent_of(line) <= base and not line.lstrip().startswith(('#', '//', ')', ']', '}', ',')):
+                break
+            if line.strip() == '}' and indent_of(line) <= base:
+                break
+            body += 1
+            last = i + 1
+        i += 1
+    return decl_line, max(last, decl_line)
+
+
+def callee_span(lines, decl_line):
+    """First 5 lines starting at decl_line of the callee."""
+    return decl_line, min(decl_line + 4, len(lines))
+
+
+def inventory(blink, root):
+    """Return (source_files, excluded_files) for a root via `blink files --json`."""
+    proc = subprocess.run([blink, 'files', str(root), '--json'],
+                          capture_output=True, check=False)
+    if proc.returncode not in (0, 3):
+        raise SystemExit(f'blink files failed for {root}: {proc.stderr.decode(errors="replace")[:400]}')
+    data = json.loads(proc.stdout.decode('utf-8'))
+    eligible = sorted(f['path'] for f in data['files'])
+    excluded = []
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink() or not path.is_file():
+            continue
+        name = path.relative_to(root).as_posix()
+        if name not in set(eligible):
+            excluded.append(name)
+    return eligible, excluded
+
+
+def identifiers_in(root, source_files):
+    names = set()
+    for rel in source_files:
+        raw = (root / rel).read_bytes()
+        try:
+            names.update(IDENT.findall(raw.decode('utf-8')))
+        except UnicodeDecodeError:
+            continue
+    return names
+
+
+def build_questions(rng, repo_id, root, source_files, sources, count, multi_share):
+    """Collect candidates and pick `count` positives. Returns (questions, pool)."""
+    decls = []  # (path, decl_line, name, doc_text)
+    index = {}  # name -> [(path, decl_line)]
+    for rel in source_files:
+        for decl_line, name, doc in declarations(root, rel, sources[rel]):
+            decls.append((rel, decl_line, name, doc))
+            index.setdefault(name, []).append((rel, decl_line))
+    rng.shuffle(decls)
+    pool = []
+    for rel, decl_line, name, doc in decls:
+        doc_first = first_sentences(doc)
+        query = to_query(doc_first, name)
+        if not query:
+            continue
+        lines = sources[rel].decode('utf-8').split('\n')
+        first, last = body_span(lines, decl_line)
+        last = min(last, line_count(sources[rel]))
+        if last == decl_line:
+            continue
+        pool.append(dict(path=rel, decl_line=decl_line, name=name, query=query,
+                         span=(first, last)))
+    questions = []
+    multi_target = round(count * multi_share)
+    made_multi = 0
+    for cand in pool:
+        if len(questions) >= count:
+            break
+        want_multi = made_multi < multi_target
+        spans = [cand['span']]
+        kind = 'single_hop'
+        if want_multi:
+            lines = sources[cand['path']].decode('utf-8').split('\n')
+            body = '\n'.join(lines[cand['decl_line'] - 1:cand['span'][1]])
+            callees = []
+            for called in CALL.findall(body):
+                locs = index.get(called, [])
+                if len(locs) == 1 and locs[0] != (cand['path'], cand['decl_line']):
+                    callees.append(locs[0])
+            other = [loc for loc in callees if loc[0] != cand['path']]
+            target = rng.choice(other) if other else (rng.choice(callees) if callees else None)
+            if target:
+                cpath, cdecl = target
+                clines = sources[cpath].decode('utf-8').split('\n')
+                cfirst, clast = callee_span(clines, cdecl)
+                clast = min(clast, line_count(sources[cpath]))
+                if clast > cfirst:
+                    spans.append((cpath, cfirst, clast))
+                    kind = 'multi_hop'
+                    made_multi += 1
+        questions.append(dict(candidate=cand, spans=spans, kind=kind))
+    return questions, pool
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', action='append', type=Path, required=True)
+    parser.add_argument('--id', action='append', required=True)
+    parser.add_argument('--seed', type=int, required=True)
+    parser.add_argument('--count', type=int, default=60)
+    parser.add_argument('--negatives', type=int, default=20)
+    parser.add_argument('--multi-share', type=float, default=0.5)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--blink', type=Path, required=True)
+    args = parser.parse_args(argv)
+    if len(args.id) != len(args.root):
+        parser.error('--id must appear once per --root')
+    roots = [(ident, root.resolve()) for ident, root in zip(args.id, args.root)]
+    rng = random.Random(args.seed)
+    out_dir = args.output.resolve().parent
+    repositories = {}
+    repo_data = {}
+    for ident, root in roots:
+        if not root.is_relative_to(out_dir):
+            parser.error(f'root {root} must sit under the corpus directory {out_dir}')
+        source_files, excluded = inventory(args.blink, root)
+        rel_root = os.path.relpath(root, out_dir)
+        repositories[ident] = dict(id=ident, root=PurePosixPath(rel_root).as_posix(),
+                                   source_files=source_files, excluded_files=excluded,
+                                   split='generated')
+        sources = {rel: (root / rel).read_bytes() for rel in source_files}
+        repo_data[ident] = dict(root=root, sources=sources, source_files=source_files)
+    questions = []
+    per_repo_pool = {}
+    for ident, root in roots:
+        data = repo_data[ident]
+        picked, pool = build_questions(rng, ident, root, data['source_files'],
+                                       data['sources'], args.count, args.multi_share)
+        per_repo_pool[ident] = pool
+        for n, item in enumerate(picked, 1):
+            cand = item['candidate']
+            spans = []
+            for spec in item['spans']:
+                if len(spec) == 3:
+                    path, first, last = spec
+                else:
+                    path, (first, last) = cand['path'], spec
+                label = span_label(data['sources'][path], first, last)
+                label['path'] = path
+                spans.append(dict(path=path, start_line=label['start_line'],
+                                  end_line=label['end_line'], snippet=label['snippet'],
+                                  sha256=label['sha256']))
+            questions.append(dict(id=f'{ident}-s{args.seed}-p{n:03d}', repository=ident,
+                                  split='generated', query=cand['query'],
+                                  tags=['generated', item['kind'], 'positive'],
+                                  expected_spans=spans))
+    # Negatives: queries drawn from a different root, labeled on the target.
+    for index, (ident, root) in enumerate(roots):
+        others = [o for o, _ in roots if o != ident]
+        if not others:
+            break
+        source_id = rng.choice(others)
+        data = repo_data[ident]
+        target_idents = identifiers_in(data['root'], data['source_files'])
+        made = 0
+        for cand in per_repo_pool[source_id]:
+            if made >= args.negatives:
+                break
+            if any(v in target_idents for v in variants(cand['name'])):
+                continue
+            made += 1
+            questions.append(dict(id=f'{ident}-s{args.seed}-n{made:03d}', repository=ident,
+                                  split='generated', query=cand['query'],
+                                  tags=['generated', 'negative'], expected_spans=[]))
+    corpus = dict(schema_version=1,
+                  repositories=[repositories[i] for i, _ in roots],
+                  questions=questions)
+    verify(corpus, out_dir)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(corpus, indent=2, ensure_ascii=False) + '\n')
+    counts = {}
+    for q in questions:
+        for tag in q['tags']:
+            counts[tag] = counts.get(tag, 0) + 1
+    print(json.dumps(dict(questions=len(questions),
+                          repositories={i: len(repositories[i]['source_files']) for i, _ in roots},
+                          tags=counts), sort_keys=True))
+    return 0
+
+
+def verify(corpus, out_dir):
+    """The same checks load_corpus performs on gold spans."""
+    repos = {r['id']: r for r in corpus['repositories']}
+    for q in corpus['questions']:
+        repo = repos[q['repository']]
+        assert bool(q['expected_spans']) != ('negative' in q['tags']), q['id']
+        root = (out_dir / repo['root']).resolve()
+        for label in q['expected_spans']:
+            path = label['path']
+            assert str(PurePosixPath(path)) == path and '..' not in PurePosixPath(path).parts, path
+            assert path in repo['source_files'], path
+            raw = (root / path).read_bytes()
+            raw.decode('utf-8')
+            starts = line_starts(raw)
+            assert 1 <= label['start_line'] <= label['end_line'] <= len(starts), q['id']
+            start = starts[label['start_line'] - 1]
+            end = starts[label['end_line']] if label['end_line'] < len(starts) else len(raw)
+            snippet = raw[start:end].decode('utf-8')
+            assert snippet == label['snippet'], (q['id'], path)
+            assert hashlib.sha256(raw[start:end]).hexdigest() == label['sha256'], q['id']
+
+
+if __name__ == '__main__':
+    sys.exit(main())
