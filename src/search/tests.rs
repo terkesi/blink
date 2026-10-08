@@ -2233,8 +2233,8 @@ fn callee_plan_ranks_rarest_names_includes_bodies_and_skips_oversized_donors() {
             "f006.py".to_owned(),
             format!(
                 "{}def tail_name():\n{}",
-                "# pad\n".repeat(70),
-                "    step = 1\n".repeat(49)
+                "# pad\n".repeat(74),
+                "    step = 1\n".repeat(78)
             ),
         ),
     ];
@@ -2243,7 +2243,7 @@ fn callee_plan_ranks_rarest_names_includes_bodies_and_skips_oversized_donors() {
     }
     assert_eq!(
         callee_plan_for(&root, &[(0, 0.9)]),
-        [(0, vec![1, 6, 7, 4, 5, 2, 3])]
+        [(0, vec![1, 6, 7, 8, 4, 5, 2, 3])]
     );
     let oversized = fixture(0);
     fs::write(
@@ -2261,6 +2261,39 @@ fn callee_plan_ranks_rarest_names_includes_bodies_and_skips_oversized_donors() {
         callee_plan_for(&oversized, &[(0, 0.95), (1, 0.6)]),
         [(1, vec![2])]
     );
+    let prepared = prepare(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        &Options::default(),
+        &mut || Control::Continue,
+    );
+    let mut checks = 0;
+    let stopped = callees::plan(
+        &prepared,
+        "behavior",
+        &BTreeMap::from([(0, Some(0.9))]),
+        &BTreeSet::from([0]),
+        0.5,
+        &VecDeque::new(),
+        Reservation {
+            attempts: 8,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 18,
+            max_bytes: 608 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || {
+            checks += 1;
+            if checks > prepared.windows.len() {
+                Control::Deadline
+            } else {
+                Control::Continue
+            }
+        },
+    );
+    assert!(stopped.is_empty());
 }
 
 fn callee_fixture() -> TempDir {
@@ -2297,18 +2330,31 @@ async fn callee_deadline_keeps_completed_shared_word_results() {
             return initial_related_scores(request, 0.1);
         }
         let mut reply = Reply::scores(request, 0.9);
-        if question_names(request).contains(&"w100".to_owned()) {
+        if question_names(request).contains(&"w110".to_owned()) {
             reply.delay = Duration::from_secs(10);
         }
         reply
     })
     .await;
     let root = callee_fixture();
+    for index in 0..10 {
+        fs::write(
+            root.path().join(format!("f{:03}.py", 101 + index)),
+            format!("def h{index}():\n    pass\n"),
+        )
+        .unwrap();
+    }
+    let calls: String = (0..10).map(|index| format!("h{index}(); ")).collect();
+    fs::write(
+        root.path().join("f000.rs"),
+        format!("much_longer_shared_identifier\nhlp(); {calls}\n"),
+    )
+    .unwrap();
     let report = execute_with_policy(
         Source::open(root.path()).unwrap(),
         "helper".into(),
         Options {
-            timeout: Duration::from_millis(1500),
+            timeout: Duration::from_secs(3),
             ..Options::default()
         },
         server.provider(),
@@ -2316,17 +2362,44 @@ async fn callee_deadline_keeps_completed_shared_word_results() {
         Policy {
             max_attempts: 8,
             max_bytes: 256 * 1024,
-            attempt_timeout: Duration::from_secs(1),
+            attempt_timeout: Duration::from_secs(2),
         },
     )
     .await;
+    let callee = |name: &str| name[1..].parse::<usize>().unwrap() >= 100;
+    let fast_callee_sent = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+        .filter(has_context)
+        .map(|request| question_names(&request))
+        .any(|names| !names.contains(&"w110".to_owned()) && names.iter().any(|name| callee(name)));
+    assert!(fast_callee_sent);
     assert!(report.budgets.stops.contains(&"deadline"));
-    assert!(report.results.iter().any(|record| record.path != "f000.rs"));
+    assert!(
+        report
+            .results
+            .iter()
+            .any(|record| record.path.ends_with(".rs") && record.path != "f000.rs")
+    );
+    assert!(
+        report
+            .raw_judgments
+            .iter()
+            .filter(|judgment| callee(&judgment.name))
+            .all(|judgment| judgment.probability.is_none_or(|p| p < 0.5))
+    );
     assert!(
         report
             .judgment_events
             .iter()
-            .all(|event| !(event.name == "w100" && event.donor.is_some()))
+            .any(|event| event.donor.is_some())
+    );
+    assert!(
+        report
+            .judgment_events
+            .iter()
+            .all(|event| !(callee(&event.name) && event.donor.is_some()))
     );
 }
 
