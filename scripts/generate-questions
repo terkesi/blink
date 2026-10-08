@@ -30,7 +30,10 @@ JS_DOC_END = re.compile(r'\*/\s*$')
 JS_DECL = re.compile(
     r'^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?\s+|class\s+'
     r'|(?:const|let|var)\s+)(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)')
-CALL = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(')
+CALL = re.compile(r'(?<![\w.:])([A-Za-z_][A-Za-z0-9_]*)\s*\(')
+ANY_DECL = re.compile(r'^\s*(?:export\s+)?(?:default\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:static\s+)?'
+                      r'(?:def|class|fn|struct|enum|trait|type|function|interface|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)')
+COMMON_CALLS = frozenset('new from into map get set len push iter next some none ok err print format vec box type isinstance super self cls str int list dict open range enumerate zip min max sum any all sorted repr hash bool float tuple bytes object property default clone unwrap expect write read parse'.split())
 IDENT = re.compile(r'\b[A-Za-z_][A-Za-z0-9_]*\b')
 WORD = re.compile(r"[A-Za-z0-9']+")
 
@@ -165,7 +168,7 @@ def parse_rust(lines):
             if i < len(lines):
                 m = RUST_DECL.match(lines[i])
                 if m:
-                    text = ' '.join(re.sub(r'^\s*///\s?', '', l) for l in lines[doc_start:i]).strip()
+                    text = ' '.join(re.sub(r'^\s*///\s?', '', l) for l in lines[doc_start:i] if RUST_DOC.match(l)).strip()
                     if text:
                         found.append((i + 1, m['name'], text))
         else:
@@ -282,11 +285,18 @@ def identifiers_in(root, source_files):
 def build_questions(rng, repo_id, root, source_files, sources, count, multi_share):
     """Collect candidates and pick `count` positives. Returns (questions, pool)."""
     decls = []  # (path, decl_line, name, doc_text)
-    index = {}  # name -> [(path, decl_line)]
+    index = {}  # name -> [(path, decl_line)] over every declaration, documented or not
     for rel in source_files:
+        try:
+            text = sources[rel].decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        for number, line in enumerate(text.split('\n'), 1):
+            m = ANY_DECL.match(line)
+            if m:
+                index.setdefault(m.group(1), []).append((rel, number))
         for decl_line, name, doc in declarations(root, rel, sources[rel]):
             decls.append((rel, decl_line, name, doc))
-            index.setdefault(name, []).append((rel, decl_line))
     rng.shuffle(decls)
     pool = []
     for rel, decl_line, name, doc in decls:
@@ -316,7 +326,8 @@ def build_questions(rng, repo_id, root, source_files, sources, count, multi_shar
             callees = []
             for called in CALL.findall(body):
                 locs = index.get(called, [])
-                if len(locs) == 1 and locs[0] != (cand['path'], cand['decl_line']):
+                if (len(called) >= 5 and called.lower() not in COMMON_CALLS and len(locs) == 1
+                        and locs[0] != (cand['path'], cand['decl_line'])):
                     callees.append(locs[0])
             other = [loc for loc in callees if loc[0] != cand['path']]
             target = rng.choice(other) if other else (rng.choice(callees) if callees else None)
