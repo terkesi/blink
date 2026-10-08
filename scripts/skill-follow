@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Measure the skill's follow-up rule without a model: from each returned excerpt, take the names it
+calls and defines, find their definitions and callers with ripgrep, and count the gold spans an agent
+would reach by reading those hits. Reads compare-driver trial directories. Blink-alone numbers stay
+separate; this reports what following the skill adds.
+
+Usage: skill-follow --corpus CORPUS DIR [DIR...] [--tools blink,jg] [--names 6] [--hits 8] [--context 8]
+"""
+import argparse, json, re, subprocess, sys
+from collections import defaultdict
+from pathlib import Path
+
+DECL = re.compile(r'^\s*(?:export\s+)?(?:default\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:static\s+)?'
+                  r'(?:def|class|fn|struct|enum|trait|type|function|interface|impl)\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
+CALL = re.compile(r'(?<![\w.:])([A-Za-z_][A-Za-z0-9_]{3,})\s*\(')
+COMMON = frozenset('self this super print format println assert isinstance return match while elif else if for'.split())
+
+
+def excerpt_text(root, record):
+    data = (root / record['path']).read_bytes()
+    return data[int(record['start_byte']):int(record['end_byte'])].decode('utf-8', 'replace')
+
+
+def names_in(text, limit):
+    defined = [m.group(1) for m in DECL.finditer(text)]
+    called = [m.group(1) for m in CALL.finditer(text) if m.group(1) not in defined and m.group(1).lower() not in COMMON]
+    ordered, seen = [], set()
+    for name in called + defined:
+        if name not in seen:
+            seen.add(name); ordered.append(name)
+    return ordered[:limit], set(defined)
+
+
+def rg(pattern, root, hits):
+    try:
+        out = subprocess.run(['rg', '-n', '--no-heading', '-m', str(hits), '-e', pattern, '.'], cwd=root,
+                             capture_output=True, text=True, timeout=60).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    found = []
+    for line in out.splitlines():
+        path, _, rest = line.partition(':')
+        number, _, _ = rest.partition(':')
+        if number.isdigit():
+            found.append((path[2:] if path.startswith('./') else path, int(number)))
+    return found[:hits]
+
+
+def hop(root, records, names_limit, hits, context):
+    reached, searches = [], 0
+    for record in records:
+        names, defined = names_in(excerpt_text(root, record), names_limit)
+        for name in names:
+            patterns = [rf'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:def|fn|class|struct|enum|trait|type|function|interface)\s+{name}\b']
+            if name in defined:
+                patterns.append(rf'\b{name}\s*\(')
+            for pattern in patterns:
+                searches += 1
+                for path, line in rg(pattern, root, hits):
+                    reached.append((path, max(1, line - 1), line + context))
+    return reached, searches
+
+
+def covers(spans, path, first, last):
+    return any(p == path and a <= first and last <= b for p, a, b in spans)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('directories', nargs='+', type=Path)
+    parser.add_argument('--corpus', required=True, type=Path)
+    parser.add_argument('--tools', default='blink,jg')
+    parser.add_argument('--names', type=int, default=6)
+    parser.add_argument('--hits', type=int, default=8)
+    parser.add_argument('--context', type=int, default=8)
+    args = parser.parse_args(argv)
+    corpus = json.loads(args.corpus.read_text())
+    gold = {q['id']: q for q in corpus['questions']}
+    roots = {r['id']: (args.corpus.parent / r['root']).resolve() for r in corpus['repositories']}
+    report = defaultdict(lambda: dict(positives=0, complete_alone=0, complete_with_hop=0, spans_required=0, spans_alone=0, spans_with_hop=0,
+                                      negatives=0, negative_source_alone=0, negative_reached_with_hop=0, searches=0, reached_ranges=0, error_trials=0))
+    tools = set(args.tools.split(','))
+    for directory in args.directories:
+        for trial_path in sorted(directory.glob('*/trial.json')):
+            trial = json.loads(trial_path.read_text())
+            if trial['tool'] not in tools or trial['id'] not in gold:
+                continue
+            question = gold[trial['id']]
+            root = roots[question['repository']]
+            row = report[trial['tool']]
+            records = trial['parsed'].get('results') or []
+            excerpts = [(r['path'], int(r['start_line']), int(r['end_line'])) for r in records]
+            error = bool(trial['metrics'].get('execution_or_integrity_error'))
+            row['error_trials'] += int(error)
+            reached, searches = hop(root, records, args.names, args.hits, args.context)
+            row['searches'] += searches; row['reached_ranges'] += len(reached)
+            if question['expected_spans']:
+                row['positives'] += 1
+                alone = [covers(excerpts, s['path'], s['start_line'], s['end_line']) for s in question['expected_spans']]
+                with_hop = [a or covers(reached, s['path'], s['start_line'], s['end_line']) for a, s in zip(alone, question['expected_spans'])]
+                row['spans_required'] += len(alone); row['spans_alone'] += sum(alone); row['spans_with_hop'] += sum(with_hop)
+                row['complete_alone'] += int(all(alone) and not error); row['complete_with_hop'] += int(all(with_hop) and not error)
+            else:
+                row['negatives'] += 1
+                row['negative_source_alone'] += int(bool(excerpts)); row['negative_reached_with_hop'] += int(bool(excerpts or reached))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

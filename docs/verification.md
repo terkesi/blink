@@ -55,6 +55,14 @@ scripts/paired-summary /path/compare-output-a /path/compare-output-b --tools bli
 
 Repository roots must sit inside the corpus file's directory so relative roots resolve. These queries are doc-derived and easier than hand-written behavioral questions; many share the files their docs describe. Use generated sets for relative comparison between tools and for regression, not for absolute quality claims or release gating. The 2026-10-07 frozen driver accepts only the `calibration` and `heldout` splits; the archived `compare-v4` copy adds `generated` and is otherwise identical.
 
+## Skill follow-up measurement
+
+`scripts/skill-follow` measures the follow-up rule in `skills/blink/SKILL.md` without a model. For each trial directory written by the comparison driver, it reads the returned excerpts from the pinned root, takes the names each excerpt calls and defines, finds their definitions (and the callers of defined functions) with `rg`, and counts the gold spans an agent would reach by reading those hits. It reports, per tool, complete positives and spans found with the excerpts alone and with one hop, hits on no-answer questions, and the number of searches and ranges the hop costs. Tool-alone benchmark numbers stay separate; this measures what following the skill adds, and it applies the same rule to any tool's excerpts.
+
+```sh
+scripts/skill-follow --corpus /path/corpus.json /path/compare-output --tools blink,jg --names 3 --hits 3 --context 8
+```
+
 ## Local preparation benchmark
 
 ```sh
