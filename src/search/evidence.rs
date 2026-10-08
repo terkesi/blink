@@ -63,7 +63,11 @@ pub(super) fn plan(
         excerpts[..kept].join("\n")
     };
     let top = &records[0];
-    let probe = candidate(prepared, accepted[0].0, "probe");
+    let probe_names: Vec<String> = (0..EVIDENCE_BATCH).map(|n| format!("p{n}")).collect();
+    let probes: Vec<_> = probe_names
+        .iter()
+        .map(|name| candidate(prepared, accepted[0].0, name))
+        .collect();
     let mut text = card_text(kept);
     loop {
         let evidence = Candidate {
@@ -74,19 +78,23 @@ pub(super) fn plan(
             end_line: top.end_line,
         };
         let fits = matches!(
-            Batch::encode_with_context(
-                query,
-                std::slice::from_ref(&probe),
-                &evidence,
-                EVIDENCE_LIMIT
-            ),
+            Batch::encode_with_context(query, &probes, &evidence, EVIDENCE_LIMIT),
             Ok(Some(_))
         );
-        if fits || kept == 0 {
+        if fits || text.len() < 64 {
             break;
         }
-        kept -= 1;
-        text = card_text(kept);
+        if kept > 1 {
+            kept -= 1;
+            text = card_text(kept);
+        } else {
+            kept = 0;
+            let mut end = text.len() / 2;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+        }
     }
     let evidence = Candidate {
         name: "evidence",
@@ -99,12 +107,21 @@ pub(super) fn plan(
         .iter()
         .map(|&(index, _)| prepared.windows[index].file)
         .collect();
+    let kept_paths: BTreeSet<&str> = records[..kept.max(1)]
+        .iter()
+        .map(|record| record.path.as_str())
+        .collect();
+    let card_files: BTreeSet<usize> = accepted_files
+        .iter()
+        .copied()
+        .filter(|&file| kept_paths.contains(prepared.snapshot.files()[file].path()))
+        .collect();
     let card = (
         text.clone(),
         top.path.clone(),
         top.start_line,
         top.end_line,
-        accepted_files.clone(),
+        card_files,
     );
     let mut targets: Vec<(u8, usize, usize, f64)> = Vec::new();
     for (&index, &score) in best {

@@ -3012,6 +3012,31 @@ fn evidence_card_shrinks_until_it_encodes() {
         Batch::encode_with_context("behavior", &[target], &probe, EVIDENCE_LIMIT),
         Ok(Some(_))
     ));
+    let single = fixture(0);
+    let heavy: String = (0..71)
+        .map(|_| format!("{}\n", "\\\"".repeat(28)))
+        .collect();
+    fs::write(single.path().join("f000.py"), &heavy).unwrap();
+    fs::write(single.path().join("f001.py"), "def target():\n    pass\n").unwrap();
+    let (text, ..) = evidence_card_for(&single, &[(0, 0.9)], &[1]).unwrap();
+    assert!(text.len() < heavy.len());
+    let probes: Vec<_> = (0..EVIDENCE_BATCH)
+        .map(|n| Candidate {
+            name: ["p0", "p1", "p2", "p3"][n],
+            ..target
+        })
+        .collect();
+    let card = Candidate {
+        name: "evidence",
+        path: "f000.py",
+        text: &text,
+        start_line: 1,
+        end_line: 71,
+    };
+    assert!(matches!(
+        Batch::encode_with_context("behavior", &probes, &card, EVIDENCE_LIMIT),
+        Ok(Some(_))
+    ));
 }
 
 #[tokio::test]

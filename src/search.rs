@@ -574,8 +574,17 @@ async fn execute_with_policy(
         policy
     } else {
         Policy {
-            max_attempts: policy.max_attempts + CALLEE_JOBS + EVIDENCE_JOBS,
-            max_bytes: policy.max_bytes + CALLEE_BYTES + EVIDENCE_ALLOWANCE,
+            max_attempts: policy.max_attempts + CALLEE_JOBS,
+            max_bytes: policy.max_bytes + CALLEE_BYTES,
+            ..policy
+        }
+    };
+    let evidence_policy = if options.thorough {
+        policy
+    } else {
+        Policy {
+            max_attempts: followup.max_attempts + EVIDENCE_JOBS,
+            max_bytes: followup.max_bytes + EVIDENCE_ALLOWANCE,
             ..policy
         }
     };
@@ -583,8 +592,8 @@ async fn execute_with_policy(
         policy
     } else {
         Policy {
-            max_attempts: followup.max_attempts + 2,
-            max_bytes: followup.max_bytes + 128 * 1024,
+            max_attempts: evidence_policy.max_attempts + 2,
+            max_bytes: evidence_policy.max_bytes + 128 * 1024,
             ..policy
         }
     };
@@ -658,10 +667,10 @@ async fn execute_with_policy(
             }
             Control::Continue => {}
         }
-        let admission = if phase == Phase::Initial {
-            initial_policy
-        } else {
-            followup
+        let admission = match phase {
+            Phase::Initial => initial_policy,
+            Phase::Evidence => evidence_policy,
+            _ => followup,
         };
         while tasks.len() < CONCURRENCY {
             if control() != Control::Continue {
@@ -701,16 +710,9 @@ async fn execute_with_policy(
             } else {
                 break;
             };
-            let context_files: Vec<usize> = match &job.purpose {
-                Purpose::Related { donor, .. } => vec![prepared.windows[*donor].file],
-                Purpose::Evidence { .. } => evidence_card
-                    .as_ref()
-                    .map(|card| card.4.iter().copied().collect())
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            };
-            if context_files.iter().any(|&file| {
-                !fresh.contains(&file)
+            if let Purpose::Related { donor, .. } = &job.purpose {
+                let file = prepared.windows[*donor].file;
+                if !fresh.contains(&file)
                     || !related::recheck(
                         &mut prepared,
                         file,
@@ -719,8 +721,9 @@ async fn execute_with_policy(
                         &mut errors,
                         &mut { &control },
                     )
-            }) {
-                continue;
+                {
+                    continue;
+                }
             }
             let admission = if job.pending_retry.is_some() || job.refusal_retry {
                 actual_policy
@@ -877,11 +880,21 @@ async fn execute_with_policy(
                     &followup_targets,
                     options.threshold,
                     used,
-                    followup,
+                    evidence_policy,
                     &mut { &control },
                 );
                 if let Some((card, jobs)) = planned
                     && !jobs.is_empty()
+                    && card.4.iter().all(|&file| {
+                        related::recheck(
+                            &mut prepared,
+                            file,
+                            &mut fresh,
+                            &mut changed_files,
+                            &mut errors,
+                            &mut { &control },
+                        )
+                    })
                 {
                     evidence_card = Some(card);
                     phase = Phase::Evidence;
