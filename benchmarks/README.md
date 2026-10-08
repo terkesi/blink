@@ -1,6 +1,6 @@
 # Benchmarks
 
-[2026-10-07 results](2026-10-07.md) record the current retrieval limits and experiment history. Region previews and bounded follow-up search improved calibration completeness from 4/12 to 10/12. The final candidate repeated at 10/12, with no additional negative-source cases or errors and a median of sixteen requests instead of eight. Fresh validation remains outstanding.
+[2026-10-08 results](2026-10-08.md) report the first fresh head-to-head comparison. The retained version completed 6 of 11 held-out positive questions and the Reference CLI completed 8, so Blink has not qualified for team release. Bounded callee requests raised calibration from 10/12 to 11/12 in two runs at a median of 17.5 to 18 requests. [2026-10-07 results](2026-10-07.md) record the earlier experiment history.
 
 ## Read the metrics
 
