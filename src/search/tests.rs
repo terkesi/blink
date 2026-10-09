@@ -4050,10 +4050,11 @@ fn deepen_files_the_callee_tier_collects_but_does_not_sweep_stay_eligible_for_th
 
 #[tokio::test]
 async fn output_limit_drops_the_weakest_records_first_in_json_and_text() {
-    // Three big files; the middle one in output order is the weakest and must be the one dropped.
+    // Output order under the directory rule is [x/a 0.9, y/c 0.5, x/b 0.6]: the weakest record sits
+    // in the middle, so dropping from the end would lose the stronger x/b instead.
     let root = fixture(0);
     let heavy = "\"\\ab\n".repeat(6_000);
-    for name in ["a/first.rs", "b/second.rs", "c/third.rs"] {
+    for name in ["x/a.rs", "x/b.rs", "x/d.rs", "y/c.rs"] {
         let path = root.path().join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, &heavy).unwrap();
@@ -4062,20 +4063,36 @@ async fn output_limit_drops_the_weakest_records_first_in_json_and_text() {
         let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
         let mut reply = Reply::scores(request, 0.9);
         for answer in reply.body["answers"].as_array_mut().unwrap() {
-            let candidate = input["candidates"]
+            let path = input["candidates"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|c| c["name"] == answer["name"]);
-            if candidate.is_some_and(|c| c["path"].as_str().unwrap().starts_with("b/")) {
+                .find(|c| c["name"] == answer["name"])
+                .map(|c| c["path"].as_str().unwrap().to_owned())
+                .unwrap_or_default();
+            if path.starts_with("x/b") {
                 answer["probability"] = json!(0.6);
+            } else if path.starts_with("x/d") {
+                answer["probability"] = json!(0.55);
+            } else if path.starts_with("y/") {
+                answer["probability"] = json!(0.5);
             }
         }
         reply
     })
     .await;
-    let mut json_report = run(&root, &server, Options::thorough()).await;
-    assert_eq!(json_report.results.len(), 3);
+    // Four records and a limit of three: the directory rule puts y/c (0.5) ahead of x/b (0.6).
+    let options = Options {
+        limit: 3,
+        ..Options::thorough()
+    };
+    let mut json_report = run(&root, &server, options.clone()).await;
+    let order: Vec<&str> = json_report
+        .results
+        .iter()
+        .map(|r| r.path.as_str())
+        .collect();
+    assert_eq!(order, ["x/a.rs", "y/c.rs", "x/b.rs"]);
     let bytes = json_report.encode_json().unwrap();
     assert!(bytes.len() <= MAX_OUTPUT_BYTES);
     let value: Value = serde_json::from_slice(&bytes).unwrap();
@@ -4087,24 +4104,65 @@ async fn output_limit_drops_the_weakest_records_first_in_json_and_text() {
         .collect();
     assert!(value["output_truncated"].as_bool().unwrap());
     assert!(
-        !paths.contains(&"b/second.rs"),
-        "the 0.6 record goes first: {paths:?}"
+        !paths.contains(&"y/c.rs"),
+        "the 0.5 record goes first: {paths:?}"
     );
-    assert!(!paths.is_empty());
-    let mut text_report = run(&root, &server, Options::thorough()).await;
-    assert_eq!(text_report.results.len(), 3);
+    assert_eq!(paths[0], "x/a.rs");
+    let mut text_report = run(&root, &server, options).await;
     let text = String::from_utf8(text_report.encode_text()).unwrap();
     assert!(text.len() <= MAX_OUTPUT_BYTES);
+    assert!(!text.contains("y/c.rs"), "text drops the same record first");
+    assert!(text.contains("x/b.rs") && text.contains("x/a.rs"));
     assert!(
-        !text.contains("b/second.rs"),
-        "results {:?} truncated {} omitted {} len {}",
-        text_report
-            .results
-            .iter()
-            .map(|r| (r.path.clone(), r.probability, r.excerpt.len()))
-            .collect::<Vec<_>>(),
-        text_report.output_truncated,
-        text_report.omitted_results,
-        text.len()
+        text_report.output_truncated && text_report.omitted_results == 2,
+        "one by the limit, one by the output cap"
     );
+}
+
+#[tokio::test]
+async fn output_limit_drops_a_record_that_can_never_fit_before_a_weaker_one_that_can() {
+    let root = fixture(0);
+    fs::create_dir_all(root.path().join("x")).unwrap();
+    fs::create_dir_all(root.path().join("y")).unwrap();
+    fs::write(root.path().join("x/a.rs"), "fn a() {}\n").unwrap();
+    fs::write(root.path().join("y/c.rs"), "fn c() {}\n").unwrap();
+    // x/b alone exceeds the limit once JSON-escaped (and in text), so no order of dropping other
+    // records could make room for it.
+    fs::write(root.path().join("x/b.rs"), "\"\\ab\n".repeat(14_000)).unwrap();
+    let server = Server::new(|request, _| {
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let mut reply = Reply::scores(request, 0.9);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            let path = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == answer["name"])
+                .map(|c| c["path"].as_str().unwrap().to_owned())
+                .unwrap_or_default();
+            if path.starts_with("y/") {
+                answer["probability"] = json!(0.5);
+            } else if path.starts_with("x/b") {
+                answer["probability"] = json!(0.95);
+            }
+        }
+        reply
+    })
+    .await;
+    let mut report = run(&root, &server, Options::thorough()).await;
+    assert_eq!(report.results.len(), 3);
+    let bytes = report.encode_json().unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let paths: Vec<&str> = value["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        ["x/a.rs", "y/c.rs"],
+        "the oversized record goes, the weak one that fits stays"
+    );
+    assert_eq!(report.omitted_results, 1);
 }

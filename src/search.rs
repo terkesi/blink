@@ -434,7 +434,9 @@ impl Report {
                 return Ok(bytes);
             }
             self.output_truncated = true;
-            if let Some(weakest) = self.weakest_result() {
+            if let Some(weakest) = self.weakest_result(|record| {
+                serde_json::to_vec(record).map_or(usize::MAX, |bytes| bytes.len())
+            }) {
                 self.results.remove(weakest);
                 self.omitted_results += 1;
             } else if !self.coverage.source.issues.is_empty() {
@@ -452,15 +454,25 @@ impl Report {
             }
         }
     }
-    /// The record to drop first when output must shrink: the lowest probability, latest on ties,
-    /// so the output keeps the model's most confident evidence rather than the first-listed.
-    fn weakest_result(&self) -> Option<usize> {
-        self.results
+    /// The record to drop first when output must shrink: a record that cannot fit on its own
+    /// (largest first), otherwise the lowest probability, latest on ties, so the output keeps the
+    /// model's most confident evidence rather than the first-listed.
+    fn weakest_result(&self, rendered: impl Fn(&ResultRecord) -> usize) -> Option<usize> {
+        let oversized = self
+            .results
             .iter()
             .enumerate()
-            .rev()
-            .min_by(|(_, a), (_, b)| a.probability.total_cmp(&b.probability))
-            .map(|(index, _)| index)
+            .filter(|(_, record)| rendered(record) > MAX_OUTPUT_BYTES)
+            .max_by_key(|(_, record)| rendered(record))
+            .map(|(index, _)| index);
+        oversized.or_else(|| {
+            self.results
+                .iter()
+                .enumerate()
+                .rev()
+                .min_by(|(_, a), (_, b)| a.probability.total_cmp(&b.probability))
+                .map(|(index, _)| index)
+        })
     }
     fn render_text(record: &ResultRecord) -> String {
         let mut text = format!(
@@ -491,7 +503,7 @@ impl Report {
                 break;
             }
             self.output_truncated = true;
-            match self.weakest_result() {
+            match self.weakest_result(|record| Self::render_text(record).len()) {
                 Some(weakest) => {
                     self.results.remove(weakest);
                     self.omitted_results += 1;
