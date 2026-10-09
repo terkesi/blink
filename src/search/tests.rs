@@ -4047,3 +4047,64 @@ fn deepen_files_the_callee_tier_collects_but_does_not_sweep_stay_eligible_for_th
         "d.rs is swept by the query-word tier although the callee tier collected it: {order:?} d {d_windows:?}"
     );
 }
+
+#[tokio::test]
+async fn output_limit_drops_the_weakest_records_first_in_json_and_text() {
+    // Three big files; the middle one in output order is the weakest and must be the one dropped.
+    let root = fixture(0);
+    let heavy = "\"\\ab\n".repeat(6_000);
+    for name in ["a/first.rs", "b/second.rs", "c/third.rs"] {
+        let path = root.path().join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, &heavy).unwrap();
+    }
+    let server = Server::new(|request, _| {
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let mut reply = Reply::scores(request, 0.9);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            let candidate = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == answer["name"]);
+            if candidate.is_some_and(|c| c["path"].as_str().unwrap().starts_with("b/")) {
+                answer["probability"] = json!(0.6);
+            }
+        }
+        reply
+    })
+    .await;
+    let mut json_report = run(&root, &server, Options::thorough()).await;
+    assert_eq!(json_report.results.len(), 3);
+    let bytes = json_report.encode_json().unwrap();
+    assert!(bytes.len() <= MAX_OUTPUT_BYTES);
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let paths: Vec<&str> = value["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert!(value["output_truncated"].as_bool().unwrap());
+    assert!(
+        !paths.contains(&"b/second.rs"),
+        "the 0.6 record goes first: {paths:?}"
+    );
+    assert!(!paths.is_empty());
+    let mut text_report = run(&root, &server, Options::thorough()).await;
+    assert_eq!(text_report.results.len(), 3);
+    let text = String::from_utf8(text_report.encode_text()).unwrap();
+    assert!(text.len() <= MAX_OUTPUT_BYTES);
+    assert!(
+        !text.contains("b/second.rs"),
+        "results {:?} truncated {} omitted {} len {}",
+        text_report
+            .results
+            .iter()
+            .map(|r| (r.path.clone(), r.probability, r.excerpt.len()))
+            .collect::<Vec<_>>(),
+        text_report.output_truncated,
+        text_report.omitted_results,
+        text.len()
+    );
+}

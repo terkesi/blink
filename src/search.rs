@@ -434,7 +434,8 @@ impl Report {
                 return Ok(bytes);
             }
             self.output_truncated = true;
-            if self.results.pop().is_some() {
+            if let Some(weakest) = self.weakest_result() {
+                self.results.remove(weakest);
                 self.omitted_results += 1;
             } else if !self.coverage.source.issues.is_empty() {
                 let keep = self.coverage.source.issues.len() / 2;
@@ -451,34 +452,57 @@ impl Report {
             }
         }
     }
-    pub fn encode_text(&mut self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        let mut retained = 0;
-        for record in &self.results {
-            let mut text = format!(
-                "{}:{}-{} ({:.3})\n",
-                serde_json::to_string(&record.path).expect("path serializes"),
-                record.start_line,
-                record.end_line,
-                record.probability
-            );
-            for ch in record.excerpt.chars() {
-                if ch == '\n' || ch == '\t' || !ch.is_control() {
-                    text.push(ch);
-                } else {
-                    text.extend(ch.escape_default());
-                }
+    /// The record to drop first when output must shrink: the lowest probability, latest on ties,
+    /// so the output keeps the model's most confident evidence rather than the first-listed.
+    fn weakest_result(&self) -> Option<usize> {
+        self.results
+            .iter()
+            .enumerate()
+            .rev()
+            .min_by(|(_, a), (_, b)| a.probability.total_cmp(&b.probability))
+            .map(|(index, _)| index)
+    }
+    fn render_text(record: &ResultRecord) -> String {
+        let mut text = format!(
+            "{}:{}-{} ({:.3})\n",
+            serde_json::to_string(&record.path).expect("path serializes"),
+            record.start_line,
+            record.end_line,
+            record.probability
+        );
+        for ch in record.excerpt.chars() {
+            if ch == '\n' || ch == '\t' || !ch.is_control() {
+                text.push(ch);
+            } else {
+                text.extend(ch.escape_default());
             }
-            text.push('\n');
-            if bytes.len() + text.len() > MAX_OUTPUT_BYTES {
+        }
+        text.push('\n');
+        text
+    }
+    pub fn encode_text(&mut self) -> Vec<u8> {
+        loop {
+            let total: usize = self
+                .results
+                .iter()
+                .map(|r| Self::render_text(r).len())
+                .sum();
+            if total <= MAX_OUTPUT_BYTES {
                 break;
             }
-            bytes.extend_from_slice(text.as_bytes());
-            retained += 1;
+            self.output_truncated = true;
+            match self.weakest_result() {
+                Some(weakest) => {
+                    self.results.remove(weakest);
+                    self.omitted_results += 1;
+                }
+                None => break,
+            }
         }
-        self.omitted_results += self.results.len() - retained;
-        self.output_truncated |= retained < self.results.len();
-        self.results.truncate(retained);
+        let mut bytes = Vec::new();
+        for record in &self.results {
+            bytes.extend_from_slice(Self::render_text(record).as_bytes());
+        }
         bytes
     }
 }
