@@ -34,7 +34,7 @@ npx skills add terkesi/blink --skill blink
 3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows nearest to accepted code in the same file.
 4. Rereads every accepted file and compares its hash before output, merges overlapping windows, and returns the best record per directory first.
 
-By default a search may spend 40 requests, 1.25 MiB of request bodies and 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` allows 64 requests, 2 MiB and 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
+By default fresh work is capped at 40 requests and 1.25 MiB of request bodies (42 and 1,408 KiB with retries) within 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` allows 64 requests, 2 MiB and 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
 
 ## Measured against the Reference CLI
 

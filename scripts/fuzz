@@ -24,5 +24,5 @@ with tempfile.TemporaryDirectory(prefix="blink-fuzz-seeds-") as temporary:
             corpus = repo / "fuzz" / "corpus" / target
             corpus.mkdir(parents=True, exist_ok=True)
             command.extend([str(corpus), str(root)])
-        command.extend(["--", "-runs=20000", "-max_len=8192", "-seed=20261007"])
+        command.extend(["--", "-runs=20000", "-max_len=16384", "-seed=20261007"])
         subprocess.run(command, cwd=repo, check=True)
