@@ -24,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
         && data.len() <= 1024 * 1024;
     assert!(prepared.coverage().complete);
     assert_eq!(prepared.coverage().files_included, usize::from(eligible));
-    assert!(prepared.candidate_count() <= 64);
+    assert!(prepared.candidate_count() <= Options::default().candidate_cap());
     if eligible && !data.is_empty() {
         assert!(prepared.window_count() > 0);
     } else {

@@ -3481,3 +3481,56 @@ fn deepen_plan_orders_by_file_strength_then_distance() {
     assert!(order[b_first.len()..].iter().all(|index| a.contains(index)));
     assert_eq!(order.len(), (a.len() - 1) + (b.len() - 1));
 }
+
+#[tokio::test]
+async fn initial_pool_follows_the_initial_policy_so_exploration_spans_directories() {
+    let root = fixture(0);
+    for (dir, count) in [("a", 60), ("b", 40)] {
+        fs::create_dir_all(root.path().join(dir)).unwrap();
+        for index in 0..count {
+            fs::write(
+                root.path().join(dir).join(format!("f{index:03}.rs")),
+                format!("fn item_{dir}_{index}() {{}}\n"),
+            )
+            .unwrap();
+        }
+    }
+    let baseline = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "item behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    assert_eq!(baseline.candidate_count(), 64);
+    let server = Server::new(|request, _| {
+        if is_route(request) {
+            return Reply::status(400);
+        }
+        Reply::scores(request, 0.1)
+    })
+    .await;
+    run(&root, &server, Options::default()).await;
+    let sent: BTreeSet<usize> = request_source_ids(&server.bodies()).into_iter().collect();
+    let expected: BTreeSet<usize> = baseline.selected[..56].iter().copied().collect();
+    assert_eq!(
+        sent, expected,
+        "the initial pass reads the compact pool's first 56 windows"
+    );
+    let from_b = sent
+        .iter()
+        .filter(|&&index| baseline.windows[index].file >= 60)
+        .count();
+    assert!(from_b >= 20, "only {from_b} windows from b/");
+}
+
+#[tokio::test]
+async fn sixteen_requests_run_concurrently() {
+    let server = Server::new(|request, _| {
+        let mut reply = Reply::scores(request, 0.1);
+        reply.delay = Duration::from_millis(25);
+        reply
+    })
+    .await;
+    run(&fixture(256), &server, Options::thorough()).await;
+    assert_eq!(server.peak.load(Ordering::SeqCst), CONCURRENCY);
+}

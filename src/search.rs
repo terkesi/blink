@@ -78,6 +78,10 @@ impl Options {
         }
         Ok(())
     }
+    /// Windows the initial pass can plan for: one batch of eight per allowed attempt.
+    pub fn candidate_cap(&self) -> usize {
+        self.policy().max_attempts * BATCH_SIZE
+    }
     fn policy(&self) -> Policy {
         if self.thorough {
             Policy {
@@ -640,7 +644,7 @@ async fn execute_with_policy(
             Control::Continue
         }
     };
-    let mut prepared = prepare_with_policy(&source, &query, policy, &mut { &control });
+    let mut prepared = prepare_with_policy(&source, &query, initial_policy, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
     let mut frontier = navigation::Frontier::new(&prepared, !options.thorough);

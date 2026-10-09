@@ -40,7 +40,7 @@ def sample(binary, root, output, name):
     assert coverage["files_included"] == FILES, value
     assert coverage["bytes_included"] == BYTES, value
     assert coverage["bytes_read"] >= BYTES, value
-    assert value["windows"] >= FILES and value["candidates"] == 64, value
+    assert value["windows"] >= FILES and value["candidates"] == 128, value
     return {
         "name": name,
         "status": child.returncode,

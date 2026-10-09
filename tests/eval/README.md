@@ -72,7 +72,7 @@ Use calibration only to choose a threshold. Keep held-out questions separate fro
 
 `generate_competition.py` creates four larger synthetic repositories under the explicit `--output` directory outside the source checkout.
 Each has 333 eligible files, including 320 competing implementations with behavioral near misses.
-Every file contributes at least one eligible source window, so each repository exceeds the 256-window thorough judgment budget.
+Every file contributes at least one eligible source window, so each repository exceeds the 512-window thorough judgment budget.
 Live reports must record actual available, discovered, and judged window counts. File counts alone do not prove candidate selection quality.
 
 The cohort has 64 questions and 48 required spans.
