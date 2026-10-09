@@ -795,12 +795,12 @@ async fn execute_with_policies(
                 break;
             };
             if let Purpose::Related { donor, .. } = &job.purpose {
-                // A donor file is reread once per phase for fresh jobs (many jobs share one
-                // donor, and every reread debits the run's read budget); a retry rereads it again.
+                // A donor file is reread once per phase (many jobs share one donor, and every
+                // reread debits the run's read budget); the final recheck before output catches
+                // anything that changed later.
                 let file = prepared.windows[*donor].file;
-                let retry = job.pending_retry.is_some() || job.refusal_retry;
                 if !fresh.contains(&file)
-                    || ((retry || donors_rechecked.insert(file))
+                    || (donors_rechecked.insert(file)
                         && !related::recheck(
                             &mut prepared,
                             file,

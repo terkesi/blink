@@ -1737,7 +1737,7 @@ async fn related_refusal_and_error_retain_prior_probability_and_expose_failure()
 }
 
 #[tokio::test]
-async fn related_rechecks_donor_before_retry_and_target_before_output() {
+async fn related_rechecks_donor_once_per_phase_and_target_before_output() {
     for donor_change in [true, false] {
         let root = related_fixture();
         let path = root.path().join(if donor_change { "a.rs" } else { "b.rs" });
@@ -1754,7 +1754,17 @@ async fn related_rechecks_donor_before_retry_and_target_before_output() {
         })
         .await;
         let report = run(&root, &server, Options::default()).await;
-        assert_eq!(server.bodies().len(), 2);
+        // The donor is reread once per phase, so a change during the pass is caught by the final
+        // recheck rather than before each retry; the target is rechecked before output.
+        if donor_change {
+            assert!(
+                (2..=4).contains(&server.bodies().len()),
+                "{}",
+                server.bodies().len()
+            );
+        } else {
+            assert_eq!(server.bodies().len(), 2);
+        }
         assert!(report.changed_files.contains(&if donor_change {
             "a.rs".into()
         } else {
@@ -1873,13 +1883,14 @@ async fn related_deadline_and_cancellation_restore_initial_verified_results() {
         })
         .await;
         let root = related_fixture();
+        let options = Options {
+            timeout: Duration::from_millis(150),
+            ..Options::default()
+        };
         let report = execute(
             Source::open(root.path()).unwrap(),
             "helper".into(),
-            Options {
-                timeout: Duration::from_millis(150),
-                ..Options::default()
-            },
+            options,
             server.provider(),
             cancelled,
         )
@@ -2757,15 +2768,11 @@ async fn late_refusal_retry_is_dropped_instead_of_risking_the_deadline() {
         reply
     })
     .await;
-    let report = run(
-        &related_fixture_two_targets(),
-        &server,
-        Options {
-            timeout: Duration::from_secs(2),
-            ..Options::default()
-        },
-    )
-    .await;
+    let options = Options {
+        timeout: Duration::from_secs(2),
+        ..Options::default()
+    };
+    let report = run(&related_fixture_two_targets(), &server, options).await;
     assert!(!report.budgets.stops.contains(&"deadline"));
     assert!(report.errors.is_empty());
     assert!(report.results.iter().any(|record| record.path == "b.rs"));
