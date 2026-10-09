@@ -58,6 +58,41 @@ pub(super) fn plan(
             candidates.push((rank, distance, index));
         }
     }
+    // Third tier: the files the query's own words point at most strongly, even when every window
+    // read there so far scored low, so that a long file is not left half-read on the model's word.
+    let mut lexical: BTreeMap<usize, usize> = BTreeMap::new();
+    for window in &prepared.windows {
+        *lexical.entry(window.file).or_insert(0) += window.rank;
+    }
+    let mut lexical: Vec<(usize, usize)> = lexical
+        .into_iter()
+        .filter(|(file, total)| *total > 0 && !strength.contains_key(file))
+        .map(|(file, total)| (total, file))
+        .collect();
+    lexical.sort_by(|a, b| b.cmp(a));
+    for (position, &(_, file)) in lexical.iter().take(DEEPEN_LEXICAL_FILES).enumerate() {
+        let unread: Vec<usize> = (0..prepared.windows.len())
+            .filter(|index| {
+                prepared.windows[*index].file == file && !probabilities.contains_key(index)
+            })
+            .collect();
+        if unread.len() < DEEPEN_MIN_UNREAD {
+            continue;
+        }
+        let anchor = (0..prepared.windows.len())
+            .filter(|index| prepared.windows[*index].file == file)
+            .max_by_key(|index| (prepared.windows[*index].rank, usize::MAX - *index))
+            .map(|index| &prepared.windows[index])
+            .expect("file has windows");
+        for index in unread {
+            let window = &prepared.windows[index];
+            let distance = window
+                .start_line
+                .saturating_sub(anchor.end_line)
+                .max(anchor.start_line.saturating_sub(window.end_line));
+            candidates.push((2000 + position, distance, index));
+        }
+    }
     candidates.sort();
     let ready = tokio::time::Instant::now();
     let mut jobs = VecDeque::new();

@@ -3597,3 +3597,60 @@ fn deepen_plan_includes_implicated_files_after_accepted_ones() {
         "files below the floor are not read"
     );
 }
+
+#[test]
+fn deepen_plan_sweeps_the_files_the_query_words_point_at() {
+    let root = fixture(0);
+    let plain: String = (1..=600).map(|n| format!("line_{n:03}\n")).collect();
+    let mut lexical = plain.clone();
+    lexical.push_str("fn behavior_entry() { behavior(); }\n");
+    fs::write(root.path().join("f000.py"), &plain).unwrap();
+    fs::write(root.path().join("f001.py"), &lexical).unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let b: Vec<usize> = (0..prepared.windows.len())
+        .filter(|&index| prepared.windows[index].file == 1)
+        .collect();
+    // Only f001 mentions the query word; its last window was read and rejected at 0.0.
+    let probabilities: BTreeMap<usize, Option<f64>> =
+        BTreeMap::from([(*b.last().unwrap(), Some(0.0))]);
+    let jobs = deepen::plan(
+        &prepared,
+        "behavior",
+        &probabilities,
+        &BTreeSet::new(),
+        0.5,
+        Reservation {
+            attempts: 20,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 60,
+            max_bytes: 2048 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    let order: Vec<usize> = jobs
+        .iter()
+        .flat_map(|job| match &job.purpose {
+            Purpose::Source(indices) => indices.clone(),
+            _ => panic!("source jobs only"),
+        })
+        .collect();
+    assert_eq!(
+        order.len(),
+        b.len() - 1,
+        "every unread window of the lexical file, nothing from the other"
+    );
+    assert!(order.iter().all(|index| b.contains(index)));
+    assert_eq!(
+        order[0],
+        b[b.len() - 2],
+        "nearest to the window that mentions the query first"
+    );
+}

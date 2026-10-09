@@ -30,6 +30,7 @@ const DEEPEN_JOBS: usize = 8;
 const DEEPEN_BATCH: usize = 8;
 const DEEPEN_BYTES: usize = 256 * 1024;
 const DEEPEN_FLOOR: f64 = 0.2;
+const DEEPEN_LEXICAL_FILES: usize = 3;
 const DEEPEN_MIN_UNREAD: usize = 4;
 const EVIDENCE_JOBS: usize = 2;
 const NOMINATION_CHOICE: f64 = 0.6;

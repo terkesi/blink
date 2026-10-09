@@ -33,7 +33,7 @@ npx skills add terkesi/blink --skill blink
 
 1. Lists eligible files under the root: UTF-8 text, `.gitignore` honoured, hidden, dependency, build and credential paths excluded.
 2. On larger scopes, scores short previews of the repository's regions, then judges up to eight 80-line windows per request, each with its own yes-or-no question plus one listwise question ("which of these, if any, is the answer?").
-3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows of implicated files, nearest to their strongest window first.
+3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows of implicated files (accepted ones, then those the model or the query's own words point at), nearest to their strongest window first.
 4. Rereads every accepted file and compares its hash before output, merges overlapping windows, and returns the best record per directory first.
 
 By default fresh work is capped at 44 requests and 1,408 KiB of request bodies (46 and 1,536 KiB with retries) within 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` allows 64 requests, 2 MiB and 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
