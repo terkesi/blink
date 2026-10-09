@@ -164,15 +164,64 @@ fn fixture(files: usize) -> TempDir {
     }
     root
 }
+/// The loopback tests drive the coordinator with the compact policy the suite was written
+/// against (8 initial attempts, 256 KiB, 5-second attempts); production defaults are larger
+/// and are pinned by `production_defaults_are_the_documented_limits`.
+fn test_policy(options: &Options) -> Policy {
+    if options.thorough {
+        Policy {
+            max_attempts: 32,
+            max_bytes: 1024 * 1024,
+            attempt_timeout: Duration::from_secs(15),
+        }
+    } else {
+        Policy {
+            max_attempts: 8,
+            max_bytes: 256 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        }
+    }
+}
+
 async fn run(root: &TempDir, server: &Server, options: Options) -> Report {
-    execute(
+    let policy = test_policy(&options);
+    execute_with_policy(
         Source::open(root.path()).unwrap(),
         "item behavior".into(),
         options,
         server.provider(),
         Arc::new(AtomicBool::new(false)),
+        policy,
     )
     .await
+}
+
+#[tokio::test]
+async fn production_defaults_are_the_documented_limits() {
+    let server = Server::new(|request, _| Reply::scores(request, 0.9)).await;
+    let report = execute(
+        Source::open(fixture(4).path()).unwrap(),
+        "item behavior".into(),
+        Options::default(),
+        server.provider(),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
+    assert_eq!(report.budgets.max_attempts, 42);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 1408 * 1024);
+    assert_eq!(report.budgets.max_concurrent_requests, 16);
+    assert_eq!(report.budgets.timeout_ms, 30_000);
+    let report = execute(
+        Source::open(fixture(4).path()).unwrap(),
+        "item behavior".into(),
+        Options::thorough(),
+        server.provider(),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
+    assert_eq!(report.budgets.max_attempts, 64);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 2 * 1024 * 1024);
+    assert_eq!(report.budgets.timeout_ms, 60_000);
 }
 
 #[test]
@@ -184,10 +233,10 @@ fn plans_every_byte_with_utf8_boundaries_line_caps_and_overlap() {
         (0..240).map(|n| format!("line{n}\n")).collect::<String>()
     );
     fs::write(root.path().join("source.rs"), &text).unwrap();
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "line",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let mut covered = vec![false; text.len()];
@@ -232,12 +281,18 @@ fn exploration_reaches_other_files_and_planning_obeys_control() {
     )
     .unwrap();
     let source = Source::open(root.path()).unwrap();
-    let a = prepare(&source, "relevant query", &Options::default(), &mut || {
-        Control::Continue
-    });
-    let b = prepare(&source, "relevant query", &Options::default(), &mut || {
-        Control::Continue
-    });
+    let a = prepare_with_policy(
+        &source,
+        "relevant query",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let b = prepare_with_policy(
+        &source,
+        "relevant query",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
     assert_eq!(a.selected, b.selected);
     let files: BTreeSet<_> = a
         .selected
@@ -253,9 +308,12 @@ fn exploration_reaches_other_files_and_planning_obeys_control() {
             .step_by(2)
             .all(|&index| a.windows[index].file == 0)
     );
-    let cancelled = prepare(&source, "query", &Options::default(), &mut || {
-        Control::Cancel
-    });
+    let cancelled = prepare_with_policy(
+        &source,
+        "query",
+        test_policy(&Options::default()),
+        &mut || Control::Cancel,
+    );
     assert!(!cancelled.coverage().complete);
     assert_eq!(cancelled.window_count(), 0);
 }
@@ -276,9 +334,12 @@ fn exploration_preserves_file_order_when_all_windows_fit() {
     }
     let source = Source::open(root.path()).unwrap();
     for options in [Options::default(), Options::thorough()] {
-        let prepared = prepare(&source, "relevant query", &options, &mut || {
-            Control::Continue
-        });
+        let prepared = prepare_with_policy(
+            &source,
+            "relevant query",
+            test_policy(&options),
+            &mut || Control::Continue,
+        );
         let paths: Vec<_> = prepared
             .selected
             .iter()
@@ -317,12 +378,18 @@ fn exploration_reaches_distinct_directories_within_the_candidate_cap() {
     }
     let source = Source::open(root.path()).unwrap();
     for (options, cap) in [(Options::default(), 64), (Options::thorough(), 256)] {
-        let a = prepare(&source, "relevant query", &options, &mut || {
-            Control::Continue
-        });
-        let b = prepare(&source, "relevant query", &options, &mut || {
-            Control::Continue
-        });
+        let a = prepare_with_policy(
+            &source,
+            "relevant query",
+            test_policy(&options),
+            &mut || Control::Continue,
+        );
+        let b = prepare_with_policy(
+            &source,
+            "relevant query",
+            test_policy(&options),
+            &mut || Control::Continue,
+        );
         assert_eq!(a.selected, b.selected);
         assert_eq!(a.candidate_count(), cap);
         assert_eq!(a.selected.iter().collect::<BTreeSet<_>>().len(), cap);
@@ -411,7 +478,8 @@ async fn reserves_actual_encoded_bytes_and_caps_concurrent_attempts() {
         report.budgets.encoded_request_bytes,
         server.bodies().iter().map(Vec::len).sum::<usize>()
     );
-    assert_eq!(server.peak.load(Ordering::SeqCst), 4);
+    let peak = server.peak.load(Ordering::SeqCst);
+    assert!((4..=CONCURRENCY).contains(&peak), "peak {peak}");
     assert!(report.budgets.encoded_request_bytes <= 256 * 1024);
     let no_bytes = execute_with_policy(
         Source::open(root.path()).unwrap(),
@@ -1051,9 +1119,12 @@ async fn delayed_routes_promote_exact_late_source_without_authorizing_results() 
     for priority in [1.0, 0.4] {
         let root = fixture(160);
         let source = Source::open(root.path()).unwrap();
-        let baseline = prepare(&source, "item behavior", &Options::default(), &mut || {
-            Control::Continue
-        });
+        let baseline = prepare_with_policy(
+            &source,
+            "item behavior",
+            test_policy(&Options::default()),
+            &mut || Control::Continue,
+        );
         assert!(!baseline.selected.contains(&159));
         let server = Server::new(move |request, _| {
             let mut reply = Reply::scores(request, 0.1);
@@ -1069,12 +1140,13 @@ async fn delayed_routes_promote_exact_late_source_without_authorizing_results() 
         })
         .await;
         let provider = server.provider();
-        let pending = tokio::spawn(execute(
+        let pending = tokio::spawn(execute_with_policy(
             source,
             "item behavior".into(),
             Options::default(),
             provider,
             Arc::new(AtomicBool::new(false)),
+            test_policy(&Options::default()),
         ));
         let started = Instant::now();
         while server.bodies().len() < 4 && started.elapsed() < Duration::from_secs(2) {
@@ -1127,10 +1199,10 @@ async fn delayed_routes_promote_exact_late_source_without_authorizing_results() 
 async fn terminal_and_refused_routes_fall_back_without_retry_or_source_coverage() {
     for refusal in [false, true] {
         let root = fixture(80);
-        let baseline = prepare(
+        let baseline = prepare_with_policy(
             &Source::open(root.path()).unwrap(),
             "item behavior",
-            &Options::default(),
+            test_policy(&Options::default()),
             &mut || Control::Continue,
         );
         let server = Server::new(move |request, _| {
@@ -1202,10 +1274,10 @@ fn route_cards_bound_escaping_long_paths_queries_and_planning_cancellation() {
     let text = format!("{}\n", "🦀\\\"".repeat(2000));
     fs::write(directory.join("source.rs"), &text).unwrap();
     let query = "\\\"".repeat(2048);
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         &query,
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let mut frontier = navigation::Frontier::new(&prepared, true);
@@ -1255,9 +1327,12 @@ async fn no_fit_route_and_source_jobs_allow_a_later_smaller_source_job() {
         .unwrap();
     }
     let source = Source::open(root.path()).unwrap();
-    let prepared = prepare(&source, "query", &Options::default(), &mut || {
-        Control::Continue
-    });
+    let prepared = prepare_with_policy(
+        &source,
+        "query",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
     let allowance = source_batch(&prepared, "query", &prepared.selected[8..16])
         .unwrap()
         .encoded_len();
@@ -1300,10 +1375,10 @@ async fn highest_priority_region_finishes_its_later_window_before_lower_regions(
     let mut text = "opaque implementation line\n".repeat(119);
     text.push_str("unique_tail_action();\n");
     fs::write(root.path().join("zz_region.rs"), &text).unwrap();
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "item behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     assert!(!prepared.selected.contains(&160));
@@ -1373,9 +1448,10 @@ async fn thorough_bodies_and_ledger_match_original_static_batches() {
         let root = fixture(files);
         let source = Source::open(root.path()).unwrap();
         let options = Options::thorough();
-        let prepared = prepare(&source, "item behavior", &options, &mut || {
-            Control::Continue
-        });
+        let prepared =
+            prepare_with_policy(&source, "item behavior", test_policy(&options), &mut || {
+                Control::Continue
+            });
         let baseline = Server::new(|request, _| Reply::scores(request, 0.1)).await;
         let mut expected = Reservation::default();
         for indices in prepared.selected.chunks(BATCH_SIZE) {
@@ -1411,7 +1487,9 @@ async fn thorough_no_fit_never_admits_windows_outside_original_selection() {
     }
     let source = Source::open(root.path()).unwrap();
     let options = Options::thorough();
-    let prepared = prepare(&source, "neutral", &options, &mut || Control::Continue);
+    let prepared = prepare_with_policy(&source, "neutral", test_policy(&options), &mut || {
+        Control::Continue
+    });
     assert_eq!(prepared.selected, (0..256).collect::<Vec<_>>());
     let policy = Policy {
         max_attempts: 32,
@@ -1454,9 +1532,12 @@ async fn thorough_no_fit_never_admits_windows_outside_original_selection() {
 async fn default_keeps_the_same_route_and_source_bodies() {
     let root = fixture(160);
     let source = Source::open(root.path()).unwrap();
-    let prepared = prepare(&source, "item behavior", &Options::default(), &mut || {
-        Control::Continue
-    });
+    let prepared = prepare_with_policy(
+        &source,
+        "item behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
     let mut frontier = navigation::Frontier::new(&prepared, true);
     let routes = frontier
         .routes(&prepared, "item behavior", &mut || Control::Continue)
@@ -1812,10 +1893,10 @@ fn related_plan_packs_discontiguous_admissions_before_rejudgments() {
         )
         .unwrap();
     }
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let initial = BTreeMap::from([
@@ -1957,10 +2038,10 @@ fn related_plan_prioritizes_stronger_relationship_before_source_ordinal() {
         };
         fs::write(root.path().join(format!("f{index:03}.rs")), text).unwrap();
     }
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let (jobs, _) = related::plan(
@@ -2210,10 +2291,10 @@ fn callee_plan_adds_unplanned_unaccepted_definitions_with_their_best_caller() {
     for (name, text) in files {
         fs::write(root.path().join(name), text).unwrap();
     }
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let initial = BTreeMap::from([
@@ -2325,10 +2406,10 @@ async fn callee_jobs_follow_the_unchanged_shared_word_jobs() {
 }
 
 fn callee_plan_for(root: &TempDir, initial: &[(usize, f64)]) -> Vec<(usize, Vec<usize>)> {
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let initial: BTreeMap<_, _> = initial.iter().map(|&(index, p)| (index, Some(p))).collect();
@@ -2411,10 +2492,10 @@ fn callee_plan_ranks_rarest_names_includes_bodies_and_skips_oversized_donors() {
         callee_plan_for(&oversized, &[(0, 0.95), (1, 0.6)]),
         [(1, vec![2])]
     );
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let mut checks = 0;
@@ -2941,10 +3022,10 @@ fn evidence_card_for(
     accepted: &[(usize, f64)],
     rejected: &[usize],
 ) -> Option<evidence::Card> {
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let mut probabilities: BTreeMap<usize, Option<f64>> = accepted
@@ -3341,10 +3422,10 @@ fn deepen_plan_orders_by_file_strength_then_distance() {
     let lines: String = (1..=600).map(|n| format!("line_{n:03}\n")).collect();
     fs::write(root.path().join("f000.py"), &lines).unwrap();
     fs::write(root.path().join("f001.py"), &lines).unwrap();
-    let prepared = prepare(
+    let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
-        &Options::default(),
+        test_policy(&Options::default()),
         &mut || Control::Continue,
     );
     let windows_of = |file: usize| -> Vec<usize> {

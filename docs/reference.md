@@ -16,14 +16,14 @@ When accepted records exceed `--limit`, Blink selects the best record from each 
 
 | Limit | Default | `--thorough` |
 | --- | --- | --- |
-| Search deadline | 15 seconds | 60 seconds |
-| HTTP attempts, including retries | 26 | 32 |
-| Total encoded request bodies | 896 KiB | 1 MiB |
-| Concurrent HTTP requests | 4 | 4 |
+| Search deadline | 30 seconds | 60 seconds |
+| HTTP attempts, including retries | 42 | 64 |
+| Total encoded request bodies | 1,408 KiB | 2 MiB |
+| Concurrent HTTP requests | 16 | 16 |
 | Returned records | 8 | 8 |
 | Encoded stdout | 32 KiB | 32 KiB |
 
-`--limit` accepts 1 through 100 records. `--timeout` overrides the deadline with a positive number of seconds, up to 300. Default fresh work is limited to twenty-four requests and 768 KiB: an initial pass of at most eight requests and 256 KiB, a shared-identifier follow-up within sixteen requests and 512 KiB, up to two callee requests, up to two evidence requests, and up to four deepening requests. The remaining allowance is reserved for retries. Every actual attempt counts against one shared ledger, so an early retry can reduce later fresh work. Each batch, including a preview batch, can retry once after a transient failure within the attempt, byte, and time limits. A window the provider refuses to judge in a batch is asked once more on its own after the current pass finishes its fresh work, when a full attempt timeout remains and, for follow-up windows, its caller is still accepted. That request counts as a retry in the shared ledger, so like any retry it can reduce later fresh work. A second refusal or a failed retry leaves the window unjudged without failing the search. Redirects and automatic HTTP-client retries are disabled. Cancellation drops local requests; it cannot recall work already received by the provider.
+`--limit` accepts 1 through 100 records. `--timeout` overrides the deadline with a positive number of seconds, up to 300. Default fresh work is limited to forty requests and 1,280 KiB: an initial pass of at most sixteen requests and 512 KiB, a shared-identifier follow-up within thirty-two requests and 1 MiB, up to two callee requests, up to two evidence requests, and up to four deepening requests. The remaining allowance is reserved for retries. Every actual attempt counts against one shared ledger, so an early retry can reduce later fresh work. Each batch, including a preview batch, can retry once after a transient failure within the attempt, byte, and time limits. A window the provider refuses to judge in a batch is asked once more on its own after the current pass finishes its fresh work, when a full attempt timeout remains and, for follow-up windows, its caller is still accepted. That request counts as a retry in the shared ledger, so like any retry it can reduce later fresh work. A second refusal or a failed retry leaves the window unjudged without failing the search. Redirects and automatic HTTP-client retries are disabled. Cancellation drops local requests; it cannot recall work already received by the provider.
 
 JSON schema version 1 includes `results`, `operation`, `coverage`, `budgets`, `errors`, and `output_truncated`. Each result has a relative `path`, the whole-file `sha256`, zero-based byte offsets `start_byte` and exclusive `end_byte`, inclusive one-based line numbers, `probability`, and the exact `excerpt`. Terminal output escapes control characters. JSON preserves the source bytes as decoded UTF-8 text.
 

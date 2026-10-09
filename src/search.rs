@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const BATCH_SIZE: usize = 8;
-const CONCURRENCY: usize = 4;
+const CONCURRENCY: usize = 16;
 const CALLEE_JOBS: usize = 2;
 const CALLEE_BYTES: usize = 96 * 1024;
 const DEEPEN_JOBS: usize = 4;
@@ -50,7 +50,7 @@ impl Default for Options {
         Self {
             thorough: false,
             limit: 8,
-            timeout: Duration::from_secs(15),
+            timeout: Duration::from_secs(30),
             threshold: 0.5,
         }
     }
@@ -81,15 +81,15 @@ impl Options {
     fn policy(&self) -> Policy {
         if self.thorough {
             Policy {
-                max_attempts: 32,
-                max_bytes: 1024 * 1024,
+                max_attempts: 64,
+                max_bytes: 2 * 1024 * 1024,
                 attempt_timeout: Duration::from_secs(15),
             }
         } else {
             Policy {
-                max_attempts: 8,
-                max_bytes: 256 * 1024,
-                attempt_timeout: Duration::from_secs(5),
+                max_attempts: 16,
+                max_bytes: 512 * 1024,
+                attempt_timeout: Duration::from_secs(8),
             }
         }
     }
@@ -133,6 +133,15 @@ pub fn prepare(
     source: &Source,
     query: &str,
     options: &Options,
+    control: &mut dyn FnMut() -> Control,
+) -> Prepared {
+    prepare_with_policy(source, query, options.policy(), control)
+}
+
+fn prepare_with_policy(
+    source: &Source,
+    query: &str,
+    policy: Policy,
     control: &mut dyn FnMut() -> Control,
 ) -> Prepared {
     let snapshot = source.snapshot(Limits::default(), control);
@@ -214,7 +223,7 @@ pub fn prepare(
             directories.push_back(files);
         }
     }
-    let slots = options.policy().max_attempts * BATCH_SIZE;
+    let slots = policy.max_attempts * BATCH_SIZE;
     if windows.len() <= slots {
         by_file.sort_unstable_by_key(|&(first, _)| first);
     }
@@ -631,7 +640,7 @@ async fn execute_with_policy(
             Control::Continue
         }
     };
-    let mut prepared = prepare(&source, &query, &options, &mut { &control });
+    let mut prepared = prepare_with_policy(&source, &query, policy, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
     let mut frontier = navigation::Frontier::new(&prepared, !options.thorough);
