@@ -176,7 +176,7 @@ def score(corpus, sources, run, frozen=None):
             status=status, returned=len(results), irrelevant_results=irrelevant,
             output_truncated=case['output_truncated'], changed_files=changed_files,
             available_candidates=available, discovered_candidates=discovered, judged_candidates=len(judgments),
-            exceeds_thorough_budget=available > 1152,
+            exceeds_thorough_budget=available > 512,
             attack_judged=any(overlaps(j, attack) for j in judgments) if attack else None,
             pair_id=question.get('pair_id'), variant=question.get('variant'),
             returned_locations=[location(r) for r in results]))

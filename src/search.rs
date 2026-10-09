@@ -671,6 +671,7 @@ async fn execute_with_policies(
         ..policy
     });
     let mut deepened = false;
+    let mut donors_rechecked: BTreeSet<usize> = BTreeSet::new();
     let mut phase = Phase::Initial;
     let mut initial_state = None;
     let mut related_sent = false;
@@ -788,16 +789,20 @@ async fn execute_with_policies(
                 break;
             };
             if let Purpose::Related { donor, .. } = &job.purpose {
+                // A donor file is reread once per phase for fresh jobs (many jobs share one
+                // donor, and every reread debits the run's read budget); a retry rereads it again.
                 let file = prepared.windows[*donor].file;
+                let retry = job.pending_retry.is_some() || job.refusal_retry;
                 if !fresh.contains(&file)
-                    || !related::recheck(
-                        &mut prepared,
-                        file,
-                        &mut fresh,
-                        &mut changed_files,
-                        &mut errors,
-                        &mut { &control },
-                    )
+                    || ((retry || donors_rechecked.insert(file))
+                        && !related::recheck(
+                            &mut prepared,
+                            file,
+                            &mut fresh,
+                            &mut changed_files,
+                            &mut errors,
+                            &mut { &control },
+                        ))
                 {
                     continue;
                 }
@@ -883,8 +888,13 @@ async fn execute_with_policies(
                 queue = retries;
                 continue;
             }
-            if phase == Phase::Initial {
+            if phase == Phase::Initial
+                && (!options.thorough
+                    || tokio::time::Instant::now() + policy.attempt_timeout
+                        <= tokio::time::Instant::from_std(deadline))
+            {
                 phase = Phase::Related;
+                donors_rechecked.clear();
                 initial_state = Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                 let donors: BTreeSet<_> = probabilities
                     .iter()
@@ -937,6 +947,7 @@ async fn execute_with_policies(
                     <= tokio::time::Instant::from_std(deadline)
             {
                 phase = Phase::Callee;
+                donors_rechecked.clear();
                 initial_state = Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                 queue = std::mem::take(&mut callee_queue);
                 queue.retain(|job| {
@@ -978,6 +989,7 @@ async fn execute_with_policies(
                     {
                         evidence_card = Some(card);
                         phase = Phase::Evidence;
+                        donors_rechecked.clear();
                         initial_state =
                             Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                         queue = jobs;
@@ -993,6 +1005,7 @@ async fn execute_with_policies(
                             && let Ok(batch) = source_batch(&prepared, &query, &[index])
                         {
                             phase = Phase::Evidence;
+                            donors_rechecked.clear();
                             initial_state =
                                 Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                             queue = VecDeque::from([Job {
@@ -1026,6 +1039,7 @@ async fn execute_with_policies(
                 );
                 if !jobs.is_empty() {
                     phase = Phase::Deepen;
+                    donors_rechecked.clear();
                     initial_state =
                         Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                     queue = jobs;

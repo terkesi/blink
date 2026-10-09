@@ -4197,3 +4197,39 @@ fn declarations_cover_more_languages() {
         "a value binding is not a declaration: {found:?}"
     );
 }
+
+#[tokio::test]
+async fn shared_identifier_jobs_reread_a_donor_file_once_per_phase() {
+    // One large file whose every window is accepted and shares an identifier: thorough mode plans
+    // dozens of shared-identifier jobs from the same donor. Rereading it per job would multiply
+    // the run's read budget use by the number of jobs; once per phase keeps it to a handful.
+    let root = fixture(0);
+    let big: String = (1..=24_000)
+        .map(|n| format!("fn item_{n:05}() {{ shared_helper(); }}\n"))
+        .collect();
+    assert!(big.len() < 1024 * 1024, "stays under the per-file limit");
+    fs::write(root.path().join("big.rs"), &big).unwrap();
+    let server = Server::new(|request, _| Reply::scores(request, 0.9)).await;
+    let report = run(&root, &server, Options::thorough()).await;
+    let related_jobs = server
+        .bodies()
+        .iter()
+        .map(|b| serde_json::from_slice::<Value>(b).unwrap())
+        .filter(has_context)
+        .count();
+    assert!(related_jobs >= 8, "{related_jobs} shared-identifier jobs");
+    assert!(
+        !report.errors.iter().any(|e| e.code == "source_recheck"),
+        "{:?}",
+        report.errors
+    );
+    assert!(!report.results.is_empty());
+    // Listing, first-positive check, one check per follow-up phase, final recheck: well under one
+    // reread per job.
+    assert!(
+        report.coverage.source.bytes_read < big.len() * 10,
+        "bytes read {} for a {} byte file and {related_jobs} jobs",
+        report.coverage.source.bytes_read,
+        big.len()
+    );
+}
