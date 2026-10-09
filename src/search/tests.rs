@@ -219,8 +219,8 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 144);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 4640 * 1024);
+    assert_eq!(report.budgets.max_attempts, 150);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 5024 * 1024);
     assert_eq!(report.budgets.timeout_ms, 60_000);
 }
 
@@ -999,8 +999,8 @@ async fn thorough_policy_judges_more_than_the_default_candidate_quota() {
     // whole. The allowances are what differ from default mode (32 initial requests and 1 MiB in
     // the compact test policy, 80 and 2,592 KiB overall).
     assert_eq!(report.budgets.attempts, 10);
-    assert_eq!(report.budgets.max_attempts, 80);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 2592 * 1024);
+    assert_eq!(report.budgets.max_attempts, 82);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 2720 * 1024);
     assert!(report.coverage.complete);
 }
 

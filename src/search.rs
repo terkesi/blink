@@ -663,9 +663,11 @@ async fn execute_with_policies(
         max_bytes: evidence_policy.max_bytes + DEEPEN_BYTES,
         ..policy
     });
+    // Retry headroom grows with the first pass: two attempts and 128 KiB in default mode, eight
+    // and 512 KiB in thorough mode, whose searches run long enough to meet more transient errors.
     let actual_policy = cap(Policy {
-        max_attempts: deepen_policy.max_attempts + 2,
-        max_bytes: deepen_policy.max_bytes + 128 * 1024,
+        max_attempts: deepen_policy.max_attempts + (initial_policy.max_attempts / 8).max(2),
+        max_bytes: deepen_policy.max_bytes + (initial_policy.max_bytes / 4).max(128 * 1024),
         ..policy
     });
     let mut deepened = false;

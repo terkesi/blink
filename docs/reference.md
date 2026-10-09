@@ -4,7 +4,7 @@ The operating details behind the [README](../README.md): how a search spends its
 
 ## Search behavior in detail
 
-Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Declaration detection, used by the callee and deepening passes, covers Python, Rust, JavaScript and TypeScript, Go, Kotlin, Swift, C, Java and Scala keywords. Searches over larger scopes also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order. Thorough mode runs the same search with larger allowances: a 64-request, 2 MiB initial pass that reads scopes of up to 512 windows whole (no previews), a shared-identifier pass of twice that, and the same callee, evidence, deepening and retry increments as default mode (fresh work 142 requests and 4,512 KiB; ceiling 144 requests and 4,640 KiB).
+Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Declaration detection, used by the callee and deepening passes, covers Python, Rust, JavaScript and TypeScript, Go, Kotlin, Swift, C, Java and Scala keywords. Searches over larger scopes also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order. Thorough mode runs the same search with larger allowances: a 64-request, 2 MiB initial pass that reads scopes of up to 512 windows whole (no previews), a shared-identifier pass of twice that, and the same callee, evidence, deepening and retry increments as default mode (fresh work 142 requests and 4,512 KiB; ceiling 150 requests and 5,024 KiB, the extra retry headroom covering the transient errors a long search meets).
 
 Preview scores guide where to read; they never produce result records. Each source request asks up to eight independent relevance questions. A scope that fits one source request and 32 KiB skips previews.
 
@@ -17,8 +17,8 @@ When accepted records exceed `--limit`, Blink selects the best record from each 
 | Limit | Default | `--thorough` |
 | --- | --- | --- |
 | Search deadline | 30 seconds | 60 seconds |
-| HTTP attempts, including retries | 48 | 144 |
-| Total encoded request bodies | 1,568 KiB | 4,640 KiB |
+| HTTP attempts, including retries | 48 | 150 |
+| Total encoded request bodies | 1,568 KiB | 5,024 KiB |
 | Concurrent HTTP requests | 16 | 16 |
 | Returned records | 16 | 16 |
 | Encoded stdout | 64 KiB | 64 KiB |
