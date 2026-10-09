@@ -90,8 +90,6 @@ impl Server {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let (requests, peak, active, disconnected, answer) = state.clone();
                 tokio::spawn(async move {
-                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    peak.fetch_max(count, Ordering::SeqCst);
                     let mut request = Vec::new();
                     let body = loop {
                         let mut chunk = [0; 8192];
@@ -104,6 +102,15 @@ impl Server {
                         {
                             let headers =
                                 String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                            // Connection warm-up probes carry no body; answer and move on
+                            // without counting them as attempts.
+                            if headers.starts_with("head ") {
+                                let _ = socket
+                                    .write_all(b"HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n")
+                                    .await;
+                                request.clear();
+                                continue;
+                            }
                             let length: usize = headers
                                 .lines()
                                 .find_map(|line| line.strip_prefix("content-length: "))
@@ -115,6 +122,8 @@ impl Server {
                             }
                         }
                     };
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
                     let value = serde_json::from_slice(&body).unwrap();
                     let number = {
                         let mut requests = requests.lock().unwrap();

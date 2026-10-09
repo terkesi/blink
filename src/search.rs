@@ -693,6 +693,7 @@ async fn execute_with_policies(
             Control::Continue
         }
     };
+    provider.warm(CONCURRENCY);
     let mut prepared = prepare_with_policy(&source, &query, initial_policy, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();

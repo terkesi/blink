@@ -264,6 +264,22 @@ impl Provider {
         })
     }
 
+    /// Opens `connections` pooled connections to the endpoint ahead of the first batch, so the
+    /// TLS handshakes overlap local planning instead of the first wave of requests. Each probe is
+    /// a `HEAD` with no body; whatever the endpoint answers is discarded.
+    pub fn warm(&self, connections: usize) {
+        for _ in 0..connections {
+            let request = self
+                .client
+                .head(&self.endpoint)
+                .header(AUTHORIZATION, self.authorization.clone());
+            tokio::spawn(async move {
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), request.send()).await;
+            });
+        }
+    }
+
     pub async fn attempt(&self, batch: &Batch) -> Result<Vec<Judgment>, Failure> {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, self.authorization.clone());
