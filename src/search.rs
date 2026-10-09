@@ -760,8 +760,11 @@ async fn execute_with_policies(
                 break;
             }
             let now = tokio::time::Instant::now();
-            let job = if queue.front().is_some_and(|job| job.ready <= now) {
-                queue.pop_front().expect("ready job")
+            // A retry waiting out its backoff at the head of the queue must not hold back jobs
+            // behind it that are ready now.
+            let ready = queue.iter().position(|job| job.ready <= now);
+            let job = if let Some(index) = ready {
+                queue.remove(index).expect("ready job")
             } else if !source_exhausted && (routes_pending == 0 || source_jobs < 2) {
                 if used.attempts >= admission.max_attempts {
                     stops.insert("attempt_limit");
