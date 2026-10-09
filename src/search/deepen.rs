@@ -116,6 +116,10 @@ pub(super) fn plan(
         for windows in declaring.values() {
             let files: BTreeSet<usize> = windows.iter().map(|&(file, _)| file).collect();
             let rarity = files.len();
+            // A name declared in more files than the tier can sweep carries no signal.
+            if rarity > DEEPEN_LEXICAL_FILES {
+                continue;
+            }
             for &(file, index) in windows {
                 let entry = callee_files.entry(file).or_insert((rarity, index));
                 if rarity < entry.0 || (rarity == entry.0 && index < entry.1) {
@@ -130,6 +134,7 @@ pub(super) fn plan(
         .collect();
     callee_order.sort();
     callee_order.truncate(DEEPEN_LEXICAL_FILES);
+    let swept_by_callees: BTreeSet<usize> = callee_order.iter().map(|&(_, file, _)| file).collect();
     for (position, &(_, file, anchor_index)) in callee_order.iter().enumerate() {
         let unread: Vec<usize> = (0..prepared.windows.len())
             .filter(|index| {
@@ -169,7 +174,7 @@ pub(super) fn plan(
                 && !accepted_windows.is_empty()
                 && !strength.contains_key(file)
                 && !stale.contains(file)
-                && !callee_files.contains_key(file)
+                && !swept_by_callees.contains(file)
         })
         .map(|(file, total)| (total, file))
         .collect();
