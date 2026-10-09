@@ -12,6 +12,23 @@
 
 A complete answer does not require exhaustive repository coverage. Conversely, an empty result with incomplete coverage does not prove that a behavior is absent. None of these metrics establishes downstream coding-task success.
 
+## What each question family is for
+
+- **Sealed hand-written sets** (v3 starlette and bat, v4 jinja and just, v5 typer and jiff, v6 click and fd) are the only evidence that counts towards a release claim. Each is authored independently, with the labels unread by the tool's author until the run, and is consumed by that run: once it has steered a decision it is a diagnostic set, and a release claim needs a fresh one.
+- **Generated sets** (werkzeug and ripgrep, questions derived from documentation) are a regression check and nothing more. Both tools are above 80% on them and the remaining misses are mostly weak labels. A change must not lose on them; gaining on them says little, because their misses do not resemble the hand-written ones.
+- **Diagnostic probes** (single requests against consumed sets) decide what to build next and are never cited as results.
+
+## The gate
+
+The original gate asked for at least 90% complete hand-written positives, strictly more complete positives than the Reference CLI, no more no-answer sources than the baseline, zero error trials, and repeated cost measurements, all on a fresh sealed set. Three sealed sets in, neither tool reaches 90% on hand-written multi-span questions (the Reference CLI stands at 26 of 36, Blink at 20 of 36), so the first clause does not separate the tools. The gate used from here, on a fresh sealed set with both tools at the same output limit:
+
+1. Blink completes at least as many positives as the Reference CLI, question for question (paired wins at least losses), and at least as many required spans.
+2. Blink returns source on no more no-answer questions than the Reference CLI.
+3. Zero error trials for Blink.
+4. Median requests, bytes and wall time at most half the Reference CLI's, measured in the same run.
+
+Clauses 2 to 4 hold on every set so far; clause 1 is what remains.
+
 ## Add a run
 
 1. Freeze the source revision, executable hash, corpus, scorer, settings, and acceptance rule before reading results.
