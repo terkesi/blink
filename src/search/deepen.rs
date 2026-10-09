@@ -1,8 +1,10 @@
 use super::*;
 
-/// Plans plain source requests over the unread windows of implicated files: files that hold an
-/// accepted window first, then files whose strongest judged window reached `DEEPEN_FLOOR`. Within a
-/// file, windows nearest to its strongest judged source come first.
+/// Plans plain source requests over the unread windows of implicated files, in three tiers: files
+/// that hold an accepted window, then files whose strongest judged window reached `DEEPEN_FLOOR`,
+/// then the files whose paths and text match the query's words most. Within a file, windows nearest
+/// to the anchor (accepted, strongest, or best-matching window) come first. Files already found to
+/// have changed are skipped in every tier.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -14,11 +16,20 @@ pub(super) fn plan(
     policy: Policy,
     control: &mut dyn FnMut() -> Control,
 ) -> VecDeque<Job> {
+    let stale: BTreeSet<usize> = probabilities
+        .iter()
+        .filter_map(|(&index, probability)| {
+            probability
+                .filter(|&p| p >= threshold)
+                .map(|_| prepared.windows[index].file)
+        })
+        .filter(|file| !fresh.contains(file))
+        .collect();
     let mut strength: BTreeMap<usize, f64> = BTreeMap::new();
     for (&index, probability) in probabilities {
-        if let Some(p) = probability.filter(|&p| p >= DEEPEN_FLOOR) {
+        if let Some(p) = probability.filter(|&p| p >= threshold.min(DEEPEN_FLOOR)) {
             let file = prepared.windows[index].file;
-            if p < threshold || fresh.contains(&file) {
+            if !stale.contains(&file) {
                 let entry = strength.entry(file).or_insert(p);
                 *entry = entry.max(p);
             }
@@ -66,7 +77,7 @@ pub(super) fn plan(
     }
     let mut lexical: Vec<(usize, usize)> = lexical
         .into_iter()
-        .filter(|(file, total)| *total > 0 && !strength.contains_key(file))
+        .filter(|(file, total)| *total > 0 && !strength.contains_key(file) && !stale.contains(file))
         .map(|(file, total)| (total, file))
         .collect();
     lexical.sort_by(|a, b| b.cmp(a));

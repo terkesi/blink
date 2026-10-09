@@ -3583,6 +3583,11 @@ fn deepen_plan_includes_implicated_files_after_accepted_ones() {
         })
         .collect();
     let b_count = b.len() - 1;
+    assert_eq!(
+        order.len(),
+        (a.len() - 1) + b_count,
+        "both implicated files, nothing else"
+    );
     assert!(
         order[..b_count].iter().all(|index| b.contains(index)),
         "accepted file first"
@@ -3653,4 +3658,39 @@ fn deepen_plan_sweeps_the_files_the_query_words_point_at() {
         b[b.len() - 2],
         "nearest to the window that mentions the query first"
     );
+}
+
+#[test]
+fn deepen_plan_skips_files_already_found_stale() {
+    let root = fixture(0);
+    let lines: String = (1..=600).map(|n| format!("line_{n:03}\n")).collect();
+    fs::write(root.path().join("f000.py"), &lines).unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let a: Vec<usize> = (0..prepared.windows.len()).collect();
+    // Accepted at 0.9 but the file failed its freshness recheck (not in `fresh`); another window at 0.3.
+    let probabilities: BTreeMap<usize, Option<f64>> =
+        BTreeMap::from([(a[0], Some(0.9)), (a[2], Some(0.3))]);
+    let jobs = deepen::plan(
+        &prepared,
+        "behavior",
+        &probabilities,
+        &BTreeSet::new(),
+        0.5,
+        Reservation {
+            attempts: 20,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 60,
+            max_bytes: 2048 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    assert!(jobs.is_empty(), "a stale file is never deepened");
 }
