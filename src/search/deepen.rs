@@ -1,7 +1,8 @@
 use super::*;
 
-/// Plans plain source requests over the unread windows of files that already hold an accepted
-/// window, nearest to the accepted source first. Files are ordered by their strongest acceptance.
+/// Plans plain source requests over the unread windows of implicated files: files that hold an
+/// accepted window first, then files whose strongest judged window reached `DEEPEN_FLOOR`. Within a
+/// file, windows nearest to its strongest judged source come first.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -15,9 +16,9 @@ pub(super) fn plan(
 ) -> VecDeque<Job> {
     let mut strength: BTreeMap<usize, f64> = BTreeMap::new();
     for (&index, probability) in probabilities {
-        if let Some(p) = probability.filter(|&p| p >= threshold) {
+        if let Some(p) = probability.filter(|&p| p >= DEEPEN_FLOOR) {
             let file = prepared.windows[index].file;
-            if fresh.contains(&file) {
+            if p < threshold || fresh.contains(&file) {
                 let entry = strength.entry(file).or_insert(p);
                 *entry = entry.max(p);
             }
@@ -25,11 +26,11 @@ pub(super) fn plan(
     }
     let mut candidates: Vec<(usize, usize, usize)> = Vec::new();
     for (&file, &p) in &strength {
+        let anchor = if p >= threshold { threshold } else { p };
         let accepted: Vec<&Window> = probabilities
             .iter()
             .filter(|(index, probability)| {
-                prepared.windows[**index].file == file
-                    && probability.is_some_and(|p| p >= threshold)
+                prepared.windows[**index].file == file && probability.is_some_and(|q| q >= anchor)
             })
             .map(|(&index, _)| &prepared.windows[index])
             .collect();
@@ -41,7 +42,7 @@ pub(super) fn plan(
         if unread.len() < DEEPEN_MIN_UNREAD {
             continue;
         }
-        let rank = ((1.0 - p) * 1000.0) as usize;
+        let rank = usize::from(p < threshold) * 1000 + ((1.0 - p) * 1000.0) as usize;
         for index in unread {
             let window = &prepared.windows[index];
             let distance = accepted

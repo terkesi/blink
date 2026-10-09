@@ -207,8 +207,8 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 42);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 1408 * 1024);
+    assert_eq!(report.budgets.max_attempts, 46);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 1536 * 1024);
     assert_eq!(report.budgets.max_concurrent_requests, 16);
     assert_eq!(report.budgets.timeout_ms, 30_000);
     let report = execute(
@@ -1632,8 +1632,8 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
         );
-        assert_eq!(report.budgets.max_attempts, 26);
-        assert_eq!(report.budgets.max_encoded_request_bytes, 896 * 1024);
+        assert_eq!(report.budgets.max_attempts, 30);
+        assert_eq!(report.budgets.max_encoded_request_bytes, 1024 * 1024);
         let events: Vec<_> = report
             .judgment_events
             .iter()
@@ -3533,4 +3533,67 @@ async fn sixteen_requests_run_concurrently() {
     .await;
     run(&fixture(256), &server, Options::thorough()).await;
     assert_eq!(server.peak.load(Ordering::SeqCst), CONCURRENCY);
+}
+
+#[test]
+fn deepen_plan_includes_implicated_files_after_accepted_ones() {
+    let root = fixture(0);
+    let lines: String = (1..=600).map(|n| format!("line_{n:03}\n")).collect();
+    for name in ["f000.py", "f001.py", "f002.py"] {
+        fs::write(root.path().join(name), &lines).unwrap();
+    }
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let windows_of = |file: usize| -> Vec<usize> {
+        (0..prepared.windows.len())
+            .filter(|&index| prepared.windows[index].file == file)
+            .collect()
+    };
+    let (a, b, c) = (windows_of(0), windows_of(1), windows_of(2));
+    // f001 accepted at 0.9; f000 implicated at 0.3 (its strongest window below the threshold); f002 at 0.1 (below the floor).
+    let probabilities: BTreeMap<usize, Option<f64>> =
+        BTreeMap::from([(a[2], Some(0.3)), (b[0], Some(0.9)), (c[0], Some(0.1))]);
+    let fresh: BTreeSet<usize> = BTreeSet::from([1]);
+    let jobs = deepen::plan(
+        &prepared,
+        "behavior",
+        &probabilities,
+        &fresh,
+        0.5,
+        Reservation {
+            attempts: 20,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 60,
+            max_bytes: 2048 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    let order: Vec<usize> = jobs
+        .iter()
+        .flat_map(|job| match &job.purpose {
+            Purpose::Source(indices) => indices.clone(),
+            _ => panic!("source jobs only"),
+        })
+        .collect();
+    let b_count = b.len() - 1;
+    assert!(
+        order[..b_count].iter().all(|index| b.contains(index)),
+        "accepted file first"
+    );
+    assert_eq!(
+        order[b_count], a[1],
+        "then the implicated file, nearest to its strongest window first"
+    );
+    assert_eq!(order[b_count + 1], a[3]);
+    assert!(
+        order.iter().all(|index| !c.contains(index)),
+        "files below the floor are not read"
+    );
 }
