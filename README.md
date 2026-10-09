@@ -29,6 +29,8 @@ npx skills add terkesi/blink --skill blink
 
 ## What a search does
 
+![One real search, one frame per request: files are columns, 80-line windows are blocks; windows light up as they are judged and settle into accepted, nominated or rejected](docs/algorithm.gif)
+
 1. Lists eligible files under the root: UTF-8 text, `.gitignore` honoured, hidden, dependency, build and credential paths excluded.
 2. On larger scopes, scores short previews of the repository's regions, then judges up to eight 80-line windows per request, each with its own yes-or-no question plus one listwise question ("which of these, if any, is the answer?").
 3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows nearest to accepted code in the same file.
@@ -84,4 +86,4 @@ cargo test --locked
 scripts/verify --output /tmp/blink-proof
 ```
 
-[verification.md](docs/verification.md) covers evaluation, benchmarks, proofs, fuzzing and native builds. [reference.md](docs/reference.md) covers search internals, the inventory policy, coverage semantics and the library API. `docs/demo.sh` records the GIF above against any repository.
+[verification.md](docs/verification.md) covers evaluation, benchmarks, proofs, fuzzing and native builds. [reference.md](docs/reference.md) covers search internals, the inventory policy, coverage semantics and the library API. `docs/demo.sh` records the terminal GIF against any repository, and `docs/algorithm-animation.py` draws the search animation from an `evaluate_case` receipt.
