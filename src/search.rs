@@ -87,8 +87,8 @@ impl Options {
     fn policy(&self) -> Policy {
         if self.thorough {
             Policy {
-                max_attempts: 32,
-                max_bytes: 1024 * 1024,
+                max_attempts: 64,
+                max_bytes: 2 * 1024 * 1024,
                 attempt_timeout: Duration::from_secs(15),
             }
         } else {
@@ -688,7 +688,11 @@ async fn execute_with_policies(
     let mut prepared = prepare_with_policy(&source, &query, initial_policy, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
-    let mut frontier = navigation::Frontier::new(&prepared, true);
+    // Previews route the first pass when the scope exceeds what it can read. Thorough mode's
+    // first pass covers up to 512 windows, so scopes within that are read in full without them,
+    // which keeps complete coverage for the scopes the old thorough mode covered.
+    let routing = !options.thorough || prepared.windows.len() > prepared.candidate_count();
+    let mut frontier = navigation::Frontier::new(&prepared, routing);
     match frontier.routes(&prepared, &query, &mut { &control }) {
         Ok(routes) => queue.extend(routes.into_iter().map(|(batch, ids)| Job {
             batch,

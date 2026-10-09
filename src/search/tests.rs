@@ -219,8 +219,8 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 80);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 2592 * 1024);
+    assert_eq!(report.budgets.max_attempts, 144);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 4640 * 1024);
     assert_eq!(report.budgets.timeout_ms, 60_000);
 }
 
@@ -995,9 +995,10 @@ async fn thorough_policy_judges_more_than_the_default_candidate_quota() {
     let report = run(&fixture(80), &server, Options::thorough()).await;
     assert_eq!(report.exit_code(), 1);
     assert_eq!(report.coverage.windows_judged, 80);
-    // Ten source batches plus the region preview, as in default mode; the allowances are what
-    // differ (32 initial requests and 1 MiB in the compact test policy, 80 and 2,592 KiB overall).
-    assert_eq!(report.budgets.attempts, 11);
+    // Ten source batches and no preview: the scope fits the thorough first pass, which reads it
+    // whole. The allowances are what differ from default mode (32 initial requests and 1 MiB in
+    // the compact test policy, 80 and 2,592 KiB overall).
+    assert_eq!(report.budgets.attempts, 10);
     assert_eq!(report.budgets.max_attempts, 80);
     assert_eq!(report.budgets.max_encoded_request_bytes, 2592 * 1024);
     assert!(report.coverage.complete);
@@ -1450,34 +1451,40 @@ fn assert_matching_bodies(actual: Vec<Vec<u8>>, expected: Vec<Vec<u8>>) {
 
 #[tokio::test]
 async fn thorough_mode_is_the_default_search_with_larger_allowances() {
-    // Same scope, same scores: thorough sends the same first batches as default (previews and
-    // exploration included) and then keeps reading where default's initial allowance stops.
-    for files in [16, 320] {
+    // One-request scope: identical requests in both modes. Scope within the thorough first pass
+    // (256 windows under the compact test policy): read whole, no previews, complete coverage.
+    // Larger scope: previews on, and thorough judges more than default.
+    for files in [8, 240, 600] {
         let root = fixture(files);
         let default_server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
         let default = run(&root, &default_server, Options::default()).await;
         let thorough_server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
         let thorough = run(&root, &thorough_server, Options::thorough()).await;
-        let shared = default
-            .budgets
-            .attempts
-            .min(thorough.budgets.attempts)
-            .min(4);
-        assert_matching_bodies(
-            thorough_server.bodies()[..shared].to_vec(),
-            default_server.bodies()[..shared].to_vec(),
-        );
+        let thorough_routes = thorough_server
+            .bodies()
+            .iter()
+            .filter(|body| is_route(&serde_json::from_slice(body).unwrap()))
+            .count();
         assert!(thorough.coverage.windows_judged >= default.coverage.windows_judged);
         assert!(thorough.budgets.max_attempts > default.budgets.max_attempts);
-        if files == 320 {
-            assert!(
-                thorough_server
-                    .bodies()
-                    .iter()
-                    .any(|body| is_route(&serde_json::from_slice(body).unwrap())),
-                "thorough mode scores previews on large scopes"
-            );
-            assert!(thorough.coverage.windows_judged > default.coverage.windows_judged);
+        match files {
+            8 => assert_matching_bodies(thorough_server.bodies(), default_server.bodies()),
+            240 => {
+                assert_eq!(
+                    thorough_routes, 0,
+                    "no previews when the scope fits the first pass"
+                );
+                assert_eq!(thorough.coverage.windows_judged, 240);
+                assert!(thorough.coverage.complete);
+                assert!(!default.coverage.complete);
+            }
+            _ => {
+                assert!(
+                    thorough_routes > 0,
+                    "previews on scopes beyond the first pass"
+                );
+                assert!(thorough.coverage.windows_judged > default.coverage.windows_judged);
+            }
         }
     }
 }
