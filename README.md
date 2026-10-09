@@ -8,7 +8,7 @@ Blink is a command-line code search for coding agents. It reads the working tree
 
 ## Why it exists
 
-Agents spend most of a task finding the right code. Exact-text search needs the right identifier; reading files by hand burns context. The tools that answer behavioral questions well tend to take 15 to 20 seconds and 50 or more model calls per question, which is too slow inside an agent loop. Blink answers the same kind of question in about 2 seconds with 15 to 20 calls, stays quiet when the behavior does not exist, and never returns source it did not read byte for byte.
+Agents spend most of a task finding the right code. Exact-text search needs the right identifier; reading files by hand burns context. The tools that answer behavioral questions well tend to take 15 to 20 seconds and 50 or more model calls per question, which is too slow inside an agent loop. Blink answers the same kind of question in about 2 seconds with 20 to 40 calls, stays quiet when the behavior does not exist, and never returns source it did not read byte for byte.
 
 ## Quick start
 
@@ -43,10 +43,12 @@ Both tools answer the same questions on the same checkouts with the same scorer.
 | Set | Blink complete | Reference CLI complete | Source returned on no-answer questions | Median requests | Median time |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 360 generated questions, werkzeug and ripgrep | 300 (83%) | 304 (84%) | 5/120 vs 16/120 | 18 vs 58 to 62 | 2.1 s vs 19 to 21 s |
-| 12 hand-written multi-span questions, starlette and bat | 9 | 11 | 1/12 vs 6/12 | 14 vs 48 | 1.6 s vs 15 s |
-| 12 hand-written multi-span questions in large files, jinja and just | 2 | 9 | 1/12 vs 4/12 | 11 vs 54 | 1.9 s vs 18 s |
+| 12 hand-written multi-span questions, starlette and bat | 9 | 11 | 2/12 vs 6/12 | 27 vs 48 | 2.2 s vs 15 s |
+| 12 hand-written multi-span questions in large files, jinja and just | 4 | 9 | 1/12 vs 4/12 | 36 vs 54 | 2.2 s vs 18 s |
 
-Blink is level with the Reference CLI on generated questions and far cheaper everywhere. On hand-written questions about large files the Reference CLI still finds more, because it reads about five times as many windows. That gap is the current work, and Blink has not been released to the team until it closes. Error trials were zero for Blink on every set above.
+The hand-written rows show the current build (`8da285a`, the larger default budget); the Reference CLI columns and the generated row come from the interleaved runs at the previous build, where Blink completed 9 and 2 of those 12 at 14 and 11 median requests.
+
+Blink is level with the Reference CLI on generated questions and cheaper everywhere. On hand-written questions about large files the Reference CLI still finds more; doubling Blink's budget took the large-file set from 2 to 4 complete answers and from 20 to 32 of 41 required spans, so the remaining gap is in which windows get read, and that is the current work. Blink has not been released to the team until it closes. Error trials were zero for Blink on every set above.
 
 ## Limits
 
