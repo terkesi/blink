@@ -89,28 +89,48 @@ pub(super) fn plan(
     for &index in &accepted_windows {
         called.extend(callees::calls(text(index)));
     }
-    let mut callee_files: BTreeMap<usize, usize> = BTreeMap::new();
+    // Names the accepted code declares itself are local calls, not leads to other files.
+    for &index in &accepted_windows {
+        for name in callees::declarations(text(index)) {
+            called.remove(name);
+        }
+    }
+    // file -> (how many files declare the rarest matched name, anchor window)
+    let mut callee_files: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
     if !called.is_empty() {
+        let mut declaring: BTreeMap<&str, Vec<(usize, usize)>> = BTreeMap::new();
         for index in 0..prepared.windows.len() {
             if control() != Control::Continue {
                 return VecDeque::new();
             }
             let file = prepared.windows[index].file;
-            if strength.contains_key(&file)
-                || stale.contains(&file)
-                || callee_files.contains_key(&file)
-            {
+            if strength.contains_key(&file) || stale.contains(&file) {
                 continue;
             }
-            if callees::declarations(text(index))
-                .iter()
-                .any(|name| called.contains(name))
-            {
-                callee_files.insert(file, index);
+            for name in callees::declarations(text(index)) {
+                if called.contains(name) {
+                    declaring.entry(name).or_default().push((file, index));
+                }
+            }
+        }
+        for windows in declaring.values() {
+            let files: BTreeSet<usize> = windows.iter().map(|&(file, _)| file).collect();
+            let rarity = files.len();
+            for &(file, index) in windows {
+                let entry = callee_files.entry(file).or_insert((rarity, index));
+                if rarity < entry.0 || (rarity == entry.0 && index < entry.1) {
+                    *entry = (rarity, index);
+                }
             }
         }
     }
-    for (position, (&file, &anchor_index)) in callee_files.iter().enumerate() {
+    let mut callee_order: Vec<(usize, usize, usize)> = callee_files
+        .iter()
+        .map(|(&file, &(rarity, anchor))| (rarity, file, anchor))
+        .collect();
+    callee_order.sort();
+    callee_order.truncate(DEEPEN_LEXICAL_FILES);
+    for (position, &(_, file, anchor_index)) in callee_order.iter().enumerate() {
         let unread: Vec<usize> = (0..prepared.windows.len())
             .filter(|index| {
                 prepared.windows[*index].file == file && !probabilities.contains_key(index)

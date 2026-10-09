@@ -3792,3 +3792,97 @@ fn deepen_plan_skips_files_already_found_stale() {
     );
     assert!(jobs.is_empty(), "a stale file is never deepened");
 }
+
+#[test]
+fn deepen_callee_tier_prefers_rare_names_and_caps_its_files() {
+    let root = fixture(0);
+    // The accepted window calls a common name and a rare one; a huge file declares the common name
+    // and sorts first by path, a small-but-deepenable file declares the rare one.
+    let mut caller =
+        String::from("fn entry() {\n    let t = Thing::new();\n    helper_thing();\n}\n");
+    caller.push_str(
+        &(1..=400)
+            .map(|n| format!("line_{n:03}\n"))
+            .collect::<String>(),
+    );
+    let mut common = String::from("pub fn new() -> Self { Self }\n");
+    common.push_str(
+        &(1..=2000)
+            .map(|n| format!("common_{n:04}\n"))
+            .collect::<String>(),
+    );
+    let mut rare: String = (1..=300).map(|n| format!("other_{n:03}\n")).collect();
+    rare.push_str("fn helper_thing() {}\n");
+    rare.push_str(
+        &(1..=300)
+            .map(|n| format!("more_{n:03}\n"))
+            .collect::<String>(),
+    );
+    // `new` is also declared by a second file, so it is the less rare name.
+    let also_common = String::from("pub fn new() -> Self { Self }\n")
+        + &(1..=400)
+            .map(|n| format!("c2_{n:03}\n"))
+            .collect::<String>();
+    fs::write(root.path().join("a.rs"), &common).unwrap();
+    fs::write(root.path().join("b.rs"), &also_common).unwrap();
+    fs::write(root.path().join("m.rs"), &caller).unwrap();
+    fs::write(root.path().join("x.rs"), &rare).unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let file_of = |name: &str| {
+        prepared
+            .snapshot
+            .files()
+            .iter()
+            .position(|f| f.path() == name)
+            .unwrap()
+    };
+    let windows_of = |file: usize| -> Vec<usize> {
+        (0..prepared.windows.len())
+            .filter(|&index| prepared.windows[index].file == file)
+            .collect()
+    };
+    let m = windows_of(file_of("m.rs"));
+    let x = windows_of(file_of("x.rs"));
+    let jobs = deepen::plan(
+        &prepared,
+        "behavior",
+        &BTreeMap::from([(m[0], Some(0.9))]),
+        &BTreeSet::from([file_of("m.rs")]),
+        0.5,
+        Reservation {
+            attempts: 20,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 60,
+            max_bytes: 2048 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    let order: Vec<usize> = jobs
+        .iter()
+        .flat_map(|job| match &job.purpose {
+            Purpose::Source(indices) => indices.clone(),
+            _ => panic!("source jobs only"),
+        })
+        .collect();
+    let after_m: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|index| !m.contains(index))
+        .collect();
+    assert!(
+        x.iter().all(|index| after_m.contains(index)),
+        "the file declaring the rare name is swept in full"
+    );
+    assert!(
+        after_m[..x.len()].iter().all(|index| x.contains(index)),
+        "and it comes before the common-name files: {after_m:?} x {x:?}"
+    );
+}
