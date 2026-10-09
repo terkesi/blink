@@ -69,7 +69,7 @@ Blink now finds more on generated questions and far less on hand-written questio
 | Request bodies | 1,408 KiB | 2 MiB |
 | Concurrent requests | 16 | 16 |
 | Records returned (`--limit`, up to 100) | 8 | 8 |
-| Output | 32 KiB | 32 KiB |
+| Output | 64 KiB | 64 KiB |
 
 Exit codes: 0 results or completed; 1 no matches after judging the whole scope; 2 invalid invocation or configuration; 3 failed or incomplete; 130 interrupted.
 

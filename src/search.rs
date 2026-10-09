@@ -21,7 +21,7 @@ use std::{
 };
 use tokio::task::JoinSet;
 
-pub const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const BATCH_SIZE: usize = 8;
 const CONCURRENCY: usize = 16;
 const CALLEE_JOBS: usize = 2;
