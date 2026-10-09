@@ -209,6 +209,7 @@ pub(super) fn plan(
                 targets: chunk.iter().map(|&(_, _, index, _)| index).collect(),
             },
             pending_retry: None,
+            retries_done: 0,
             refusal_retry: false,
             ready,
         });

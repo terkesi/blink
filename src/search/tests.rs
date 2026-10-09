@@ -207,9 +207,9 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 48);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 1568 * 1024);
-    assert_eq!(report.budgets.max_concurrent_requests, 16);
+    assert_eq!(report.budgets.max_attempts, 150);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 5024 * 1024);
+    assert_eq!(report.budgets.max_concurrent_requests, 32);
     assert_eq!(report.budgets.timeout_ms, 30_000);
     let report = execute(
         Source::open(fixture(4).path()).unwrap(),
@@ -219,8 +219,8 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 150);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 5024 * 1024);
+    assert_eq!(report.budgets.max_attempts, 286);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 9632 * 1024);
     assert_eq!(report.budgets.timeout_ms, 60_000);
 }
 
@@ -501,7 +501,7 @@ async fn reserves_actual_encoded_bytes_and_caps_concurrent_attempts() {
 }
 
 #[tokio::test]
-async fn retry_is_once_and_charges_the_same_encoded_body_again() {
+async fn a_batch_retries_twice_with_backoff_and_charges_the_same_body_each_time() {
     let server = Server::new(|request, number| {
         if number == 1 {
             Reply::status(503)
@@ -521,11 +521,19 @@ async fn retry_is_once_and_charges_the_same_encoded_body_again() {
         report.budgets.encoded_request_bytes,
         bodies.iter().map(Vec::len).sum::<usize>()
     );
+    // A second transient failure is retried once more after a longer pause; a third ends it.
     let failed = Server::new(|_, _| Reply::status(503)).await;
+    let started = Instant::now();
     let report = run(&fixture(1), &failed, Options::default()).await;
     assert_eq!(report.exit_code(), 3);
-    assert_eq!(report.budgets.attempts, 2);
+    assert_eq!(report.budgets.attempts, 3);
+    assert_eq!(report.budgets.retries, 2);
     assert_eq!(report.errors.len(), 1);
+    assert!(
+        started.elapsed() >= Duration::from_millis(500),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
@@ -583,7 +591,8 @@ async fn independent_attempt_deadlines_retry_without_waiting_for_other_requests(
         },
     )
     .await;
-    assert_eq!(report.budgets.attempts, 4);
+    // No preview: a 16-window scope fits the first pass whole.
+    assert_eq!(report.budgets.attempts, 3);
     assert_eq!(report.budgets.retries, 1);
     assert_eq!(report.coverage.windows_judged, 16);
 }
@@ -609,11 +618,11 @@ async fn global_deadline_aborts_requests_and_cancellation_returns_130() {
     assert_eq!(report.exit_code(), 3);
     assert!(report.budgets.stops.contains(&"deadline"));
     assert!(report.budgets.elapsed_ms < 3000);
-    assert_eq!(server.bodies().len(), 3);
+    assert_eq!(server.bodies().len(), 2);
     assert_eq!(report.coverage.windows_judged, 0);
     assert!(report.results.is_empty());
     tokio::time::timeout(Duration::from_secs(2), async {
-        while server.disconnected.load(Ordering::SeqCst) != 3 {
+        while server.disconnected.load(Ordering::SeqCst) != 2 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
@@ -1262,7 +1271,8 @@ async fn source_retry_keeps_body_and_charge_while_routing_uses_same_ledger() {
         sources.iter().filter(|body| **body == sources[0]).count(),
         2
     );
-    assert_eq!(report.budgets.attempts, 5);
+    // Three source batches and one retry; a 24-window scope needs no preview.
+    assert_eq!(report.budgets.attempts, 4);
     assert_eq!(report.budgets.retries, 1);
     assert_eq!(
         report.budgets.encoded_request_bytes,
@@ -2356,6 +2366,7 @@ fn callee_plan_adds_unplanned_unaccepted_definitions_with_their_best_caller() {
             donor: 0,
         },
         pending_retry: None,
+        retries_done: 0,
         refusal_retry: false,
         ready: tokio::time::Instant::now(),
     }]);

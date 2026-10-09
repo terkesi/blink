@@ -32,11 +32,11 @@ npx skills add terkesi/blink --skill blink
 ![One real search, one frame per request: files are columns, 80-line windows are blocks; windows light up as they are judged and settle into accepted, nominated or rejected](docs/algorithm.gif)
 
 1. Lists eligible files under the root: UTF-8 text, `.gitignore` honoured, hidden, dependency, build and credential paths excluded.
-2. On larger scopes, scores short previews of the repository's regions, then judges up to eight 80-line windows per request, each with its own yes-or-no question plus one listwise question ("which of these, if any, is the answer?").
+2. On scopes beyond 512 windows, scores short previews of the repository's regions, then judges up to eight 80-line windows per request, each with its own yes-or-no question plus one listwise question ("which of these, if any, is the answer?").
 3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows of implicated files (accepted ones, then those the model's scores, the call graph or the query's own words point at), nearest to their anchor first.
 4. Rereads every accepted file and compares its hash before output, merges overlapping windows, and returns the best record per directory first.
 
-By default fresh work is capped at 46 requests and 1,440 KiB of request bodies (48 and 1,568 KiB with retries) within 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` runs the same passes from a 64-request initial pass that reads scopes of up to 512 windows whole, with a ceiling of 150 requests and 4.9 MiB within 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
+By default the first pass is 64 requests and 2 MiB and reads scopes of up to 512 windows whole; fresh work overall is capped at 142 requests and 4,512 KiB (150 and 5,024 KiB with retries) within 30 seconds, 32 requests at a time, and the passes stop when there is nothing left worth reading. `--thorough` doubles every allowance (a 128-request first pass, scopes of up to 1,024 windows read whole, 286 requests and 9.4 MiB) within 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
 
 ## Blink against the Reference CLI
 
@@ -66,9 +66,9 @@ In default mode Blink finds more on generated questions (311 against 298, 36 pai
 | | Default | `--thorough` |
 | --- | --- | --- |
 | Deadline | 30 s | 60 s |
-| HTTP attempts, including retries | 48 | 150 |
-| Request bodies | 1,568 KiB | 5,024 KiB |
-| Concurrent requests | 16 | 16 |
+| HTTP attempts, including retries | 150 | 286 |
+| Request bodies | 5,024 KiB | 9,632 KiB |
+| Concurrent requests | 32 | 32 |
 | Records returned (`--limit`, up to 100) | 16 | 16 |
 | Output | 64 KiB | 64 KiB |
 

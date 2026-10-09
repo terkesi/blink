@@ -132,7 +132,7 @@ def score(corpus, sources, run, frozen=None):
         require(isinstance(judgments, list), "missing judgments")
         available, discovered = case.get('available_candidates'), case.get('discovered_candidates')
         require(type(available) is int and type(discovered) is int and available >= discovered >= len(judgments), "invalid candidate counts")
-        require(len(judgments) <= (48 * 8 if mode == 'default' else 150 * 8), "judgment budget exceeded")
+        require(len(judgments) <= (150 * 8 if mode == 'default' else 286 * 8), "judgment budget exceeded")
         judgments = [byte_range(sources, question['repository'], j)[0] for j in judgments]
         results = [byte_range(sources, question['repository'], r)[0] for r in results]
         gold_spans = [byte_range(sources, question['repository'], g)[0] for g in question['expected_spans']]
@@ -176,7 +176,7 @@ def score(corpus, sources, run, frozen=None):
             status=status, returned=len(results), irrelevant_results=irrelevant,
             output_truncated=case['output_truncated'], changed_files=changed_files,
             available_candidates=available, discovered_candidates=discovered, judged_candidates=len(judgments),
-            exceeds_thorough_budget=available > 512,
+            exceeds_thorough_budget=available > 1024,
             attack_judged=any(overlaps(j, attack) for j in judgments) if attack else None,
             pair_id=question.get('pair_id'), variant=question.get('variant'),
             returned_locations=[location(r) for r in results]))

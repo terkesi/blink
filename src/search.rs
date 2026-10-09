@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const BATCH_SIZE: usize = 8;
-const CONCURRENCY: usize = 16;
+const CONCURRENCY: usize = 32;
 const CALLEE_JOBS: usize = 2;
 const CALLEE_BYTES: usize = 96 * 1024;
 const DEEPEN_JOBS: usize = 8;
@@ -87,15 +87,15 @@ impl Options {
     fn policy(&self) -> Policy {
         if self.thorough {
             Policy {
-                max_attempts: 64,
-                max_bytes: 2 * 1024 * 1024,
+                max_attempts: 128,
+                max_bytes: 4 * 1024 * 1024,
                 attempt_timeout: Duration::from_secs(15),
             }
         } else {
             Policy {
-                max_attempts: 16,
-                max_bytes: 512 * 1024,
-                attempt_timeout: Duration::from_secs(8),
+                max_attempts: 64,
+                max_bytes: 2 * 1024 * 1024,
+                attempt_timeout: Duration::from_secs(10),
             }
         }
     }
@@ -532,9 +532,14 @@ struct Job {
     batch: Batch,
     purpose: Purpose,
     pending_retry: Option<usize>,
+    retries_done: u8,
     refusal_retry: bool,
     ready: tokio::time::Instant,
 }
+
+/// Transient failures (5xx, 429, timeouts) are retried up to this many times per batch, the
+/// second time after a longer pause, within the shared ledger and the deadline.
+const BATCH_RETRIES: u8 = 2;
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
     Initial,
@@ -691,16 +696,16 @@ async fn execute_with_policies(
     let mut prepared = prepare_with_policy(&source, &query, initial_policy, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
-    // Previews route the first pass when the scope exceeds what it can read. Thorough mode's
-    // first pass covers up to 512 windows, so scopes within that are read in full without them,
-    // which keeps complete coverage for the scopes the old thorough mode covered.
-    let routing = !options.thorough || prepared.windows.len() > prepared.candidate_count();
+    // Previews route the first pass only when the scope exceeds what it can read whole: 512
+    // windows by default, 1,024 in thorough mode.
+    let routing = prepared.windows.len() > prepared.candidate_count();
     let mut frontier = navigation::Frontier::new(&prepared, routing);
     match frontier.routes(&prepared, &query, &mut { &control }) {
         Ok(routes) => queue.extend(routes.into_iter().map(|(batch, ids)| Job {
             batch,
             purpose: Purpose::Route(ids),
             pending_retry: None,
+            retries_done: 0,
             refusal_retry: false,
             ready: tokio::time::Instant::now(),
         })),
@@ -774,6 +779,7 @@ async fn execute_with_policies(
                         batch,
                         purpose: Purpose::Source(indices),
                         pending_retry: None,
+                        retries_done: 0,
                         refusal_retry: false,
                         ready: now,
                     },
@@ -1012,6 +1018,7 @@ async fn execute_with_policies(
                                 batch,
                                 purpose: Purpose::Source(vec![index]),
                                 pending_retry: None,
+                                retries_done: 0,
                                 refusal_retry: false,
                                 ready: tokio::time::Instant::now(),
                             }]);
@@ -1178,6 +1185,7 @@ async fn execute_with_policies(
                                 batch,
                                 purpose,
                                 pending_retry: None,
+                                retries_done: 0,
                                 refusal_retry: true,
                                 ready: tokio::time::Instant::now(),
                             });
@@ -1189,12 +1197,15 @@ async fn execute_with_policies(
                             Attempt::Deadline => ("attempt_timeout", None, true, Duration::ZERO),
                             Attempt::Response(Ok(_)) => unreachable!(),
                         };
-                        let retry_at = tokio::time::Instant::now().checked_add(delay);
                         if job.refusal_retry {
                             continue;
                         }
-                        if retryable && job.pending_retry.is_none() && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
+                        let backoff = delay.max(Duration::from_millis(100) * 4u32.pow(u32::from(job.retries_done)));
+                        let retry_at = tokio::time::Instant::now().checked_add(backoff);
+                        if retryable && job.retries_done < BATCH_RETRIES && retry_at.is_some_and(|at| at < tokio::time::Instant::from_std(deadline)) {
+                            if let Some(index) = job.pending_retry { pending_errors[index] = None; }
                             job.pending_retry = Some(pending_errors.len());
+                            job.retries_done += 1;
                             pending_errors.push(Some(SearchError { code, status }));
                             job.ready = retry_at.expect("retry delay checked");
                             queue.push_back(job);

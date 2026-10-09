@@ -226,6 +226,7 @@ pub(super) fn plan(
             batch,
             purpose: Purpose::Source(indices),
             pending_retry: None,
+            retries_done: 0,
             refusal_retry: false,
             ready,
         });

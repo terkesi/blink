@@ -238,6 +238,7 @@ pub(super) fn plan(
                     batch,
                     purpose: Purpose::Related { targets, donor },
                     pending_retry: None,
+                    retries_done: 0,
                     refusal_retry: false,
                     ready,
                 },

@@ -18,7 +18,7 @@ The HTTP tests run a loopback server through the production provider and search 
 
 ## Retrieval evaluation
 
-The [base corpus](../tests/eval/README.md) checks source relevance and exact answer spans. The generated competition corpus has 333 eligible files per repository and paired neutral and hostile source text. It tests selection when the candidate pool exceeds the default initial budget; thorough mode can now judge every window of it.
+The [base corpus](../tests/eval/README.md) checks source relevance and exact answer spans. The generated competition corpus has 653 eligible files per repository and paired neutral and hostile source text. It tests selection when the candidate pool exceeds the default initial budget; thorough mode can judge every window of it.
 
 ```sh
 python3 tests/eval/generate_competition.py --output /tmp/blink-eval

@@ -78,7 +78,7 @@ def generate(destination):
             root = destination / ident
             files = {}
             # Each competing implementation violates one requested behavior.
-            for index in range(320):
+            for index in range(640):
                 selected = index % len(cases)
                 concept, _, function, body, _, _ = cases[selected]
                 before, after = NEAR_MISS[split][selected]
