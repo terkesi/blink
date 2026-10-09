@@ -4166,3 +4166,19 @@ async fn output_limit_drops_a_record_that_can_never_fit_before_a_weaker_one_that
     );
     assert_eq!(report.omitted_results, 1);
 }
+
+#[test]
+fn declarations_cover_more_languages() {
+    let text = "val limit = 3\ntypealias Handler = (Int) -> Unit\nprotocol Greeter {}\nextension String {}\nactor Counter {}\ntypedef struct node node_t;\nunion Value {}\nrecord Point(int x) {}\nobject Registry {}\nmodule Api\nmod parser;\nnamespace App {}\n";
+    let found = callees::declarations(text);
+    for name in [
+        "Handler", "Greeter", "String", "Counter", "Value", "Point", "Registry", "Api", "parser",
+        "App",
+    ] {
+        assert!(found.contains(name), "{name} missing from {found:?}");
+    }
+    assert!(
+        !found.contains("limit"),
+        "a value binding is not a declaration: {found:?}"
+    );
+}

@@ -1,7 +1,7 @@
 use super::*;
 
-const DECLARATIONS: &str =
-    "def class fn fun func function struct enum trait interface type const let var";
+const DECLARATIONS: &str = "def class fn fun func function struct enum trait interface type const let var \
+     val typealias protocol extension actor typedef union record object module mod namespace";
 const MODIFIERS: &str =
     "pub export default async static public private protected abstract final unsafe override";
 
@@ -45,7 +45,7 @@ fn declaration(line: &str) -> Option<&str> {
                 ("mut", after) if keyword == "let" => word(after.trim_start()),
                 pair => pair,
             };
-            let value = listed("let const var", keyword)
+            let value = listed("let const var val", keyword)
                 && !after.split_once('=').is_some_and(|(_, init)| {
                     let (start, rest) = word(init.trim_start());
                     init.contains("=>")
