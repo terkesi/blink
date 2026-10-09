@@ -40,7 +40,7 @@ By default fresh work is capped at 46 requests and 1,440 KiB of request bodies (
 
 ## Blink against the Reference CLI
 
-Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. All Blink numbers are the current build; receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
+Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`2f401a8`); receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
 
 | | Blink | Reference CLI | Ahead |
 | --- | ---: | ---: | --- |
@@ -52,10 +52,10 @@ Same questions, same checkouts, same scorer, both tools run back to back. A ques
 | Source returned on 48 no-answer questions, hand-written | **8** | 31 | Blink |
 | Source returned on 120 no-answer questions, generated | **9** | 16 | Blink |
 | **Cost of one search (medians)** | | | |
-| Wall time | **2.4 to 3.3 s** | 18 s | Blink, 6 to 8x |
-| Slowest tenth of searches | **3 to 5 s** | 29 to 35 s | Blink |
-| Model requests | **40 to 41** | 56 to 59 | Blink |
-| Data sent to the model | **1.1 to 1.2 MB** | 1.9 to 2.0 MB | Blink |
+| Wall time | **2.7 to 3.3 s** | 18 s | Blink, 6x |
+| Slowest tenth of searches | **4 to 5 s** | 29 to 35 s | Blink |
+| Model requests | **41 to 45** | 56 to 59 | Blink |
+| Data sent to the model | **1.1 to 1.4 MB** | 1.9 to 2.0 MB | Blink |
 | Failed searches on these sets | 0 | 0 | level |
 
 Blink finds more on generated questions (311 against 298 over three fresh sets, 36 paired wins to 23 losses) and less on hand-written multi-span questions (31 against 36 over four sealed sets; on the newest set, with a declared difficulty mix, 11 against 10). The spans it still misses sit in files it never reaches or score low even when read. Blink returns source on no-answer questions a quarter as often, answers in a sixth of the time or better, and sends 40% less data. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set; the last set was level.
