@@ -1,6 +1,6 @@
 # Benchmarks
 
-[2026-10-08 results](2026-10-08.md) report the first fresh head-to-head comparison and the first generated-set comparison. On 11 held-out hand-written questions Blink completed 6 and the Reference CLI 8; on the three latest generated sets at the current budget Blink completed 311 of 360 against the Reference CLI's 298; on three sealed hand-written sets 20 of 36 against 26 with 5 against 19 no-answer sources; on two sealed hand-written sets authored independently Blink completed 10 of 12 and 4 of 12 against the Reference CLI's 11 and 9, with 1 against 6 and 1 against 4 false sources on no-answer questions, at a quarter to a fifth of the requests; on 360 generated positives the tools are level (300 against 304) at a third of the requests, a quarter of the bytes and a tenth of the wall time, with 5 against 16 false sources on 120 no-answer questions. An evidence pass that re-judges rejected windows beside the accepted excerpts added 6 of 480 with no losses, and a listwise nomination question added 17 of 480 with one loss. Blink has not qualified for team release. Bounded callee requests raised calibration from 10/12 to 11/12, and provider refusals no longer fail a search. [2026-10-07 results](2026-10-07.md) record the earlier experiment history.
+[2026-10-08 results](2026-10-08.md) report the first fresh head-to-head comparison and the first generated-set comparison. On 11 held-out hand-written questions Blink completed 6 and the Reference CLI 8; on the three latest generated sets at the current budget Blink completed 311 of 360 against the Reference CLI's 298; on four sealed hand-written sets 31 of 48 against 36 with 8 against 31 no-answer sources, the newest set level at 11 against 10; on two sealed hand-written sets authored independently Blink completed 10 of 12 and 4 of 12 against the Reference CLI's 11 and 9, with 1 against 6 and 1 against 4 false sources on no-answer questions, at a quarter to a fifth of the requests; on 360 generated positives the tools are level (300 against 304) at a third of the requests, a quarter of the bytes and a tenth of the wall time, with 5 against 16 false sources on 120 no-answer questions. An evidence pass that re-judges rejected windows beside the accepted excerpts added 6 of 480 with no losses, and a listwise nomination question added 17 of 480 with one loss. Blink has not qualified for team release. Bounded callee requests raised calibration from 10/12 to 11/12, and provider refusals no longer fail a search. [2026-10-07 results](2026-10-07.md) record the earlier experiment history.
 
 ## Read the metrics
 
@@ -20,14 +20,14 @@ A complete answer does not require exhaustive repository coverage. Conversely, a
 
 ## The gate
 
-The original gate asked for at least 90% complete hand-written positives, strictly more complete positives than the Reference CLI, no more no-answer sources than the baseline, zero error trials, and repeated cost measurements, all on a fresh sealed set. Three sealed sets in, neither tool reaches 90% on hand-written multi-span questions (the Reference CLI stands at 26 of 36, Blink at 20 of 36), so the first clause does not separate the tools. The gate used from here, on a fresh sealed set with both tools at the same output limit:
+The original gate asked for at least 90% complete hand-written positives, strictly more complete positives than the Reference CLI, no more no-answer sources than the baseline, zero error trials, and repeated cost measurements, all on a fresh sealed set. Four sealed sets in, neither tool reaches 90% on hand-written multi-span questions (the Reference CLI stands at 36 of 48, Blink at 31 of 48), so the first clause does not separate the tools. The gate used from here, on a fresh sealed set with both tools at the same output limit:
 
 1. Blink completes at least as many positives as the Reference CLI, question for question (paired wins at least losses), and at least as many required spans.
 2. Blink returns source on no more no-answer questions than the Reference CLI.
 3. Zero error trials for Blink.
 4. Median requests, bytes and wall time at most half the Reference CLI's, measured in the same run.
 
-Clauses 2 to 4 hold on every set so far; clause 1 is what remains.
+On the fourth set clauses 1 to 3 held (11 against 10, 46 against 44 spans, 3 against 12 no-answer sources, zero errors) and clause 4 held on wall time but not on requests or bytes; the earlier three sets failed clause 1.
 
 ## Add a run
 

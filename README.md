@@ -46,19 +46,19 @@ Same questions, same checkouts, same scorer, both tools run back to back. A ques
 | --- | ---: | ---: | --- |
 | **Finds every required span** | | | |
 | 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
-| 36 hand-written multi-span questions (three sealed sets) | 20 | **26** | Reference CLI |
-| Required spans found, hand-written (124) | 99 | **111** | Reference CLI |
+| 48 hand-written multi-span questions (four sealed sets) | 31 | **36** | Reference CLI |
+| Required spans found, hand-written (171) | 146 | **155** | Reference CLI |
 | **Stays quiet when there is no answer** | | | |
-| Source returned on 36 no-answer questions, hand-written | **5** | 19 | Blink |
+| Source returned on 48 no-answer questions, hand-written | **8** | 31 | Blink |
 | Source returned on 120 no-answer questions, generated | **9** | 16 | Blink |
 | **Cost of one search (medians)** | | | |
-| Wall time | **2.4 to 2.5 s** | 18 to 20 s | Blink, 7 to 8x |
-| Slowest tenth of searches | **3 to 4 s** | 29 to 37 s | Blink |
-| Model requests | **40 to 44** | 59 to 62 | Blink |
+| Wall time | **2.4 to 3.3 s** | 18 s | Blink, 6 to 8x |
+| Slowest tenth of searches | **3 to 5 s** | 29 to 35 s | Blink |
+| Model requests | **40 to 41** | 56 to 59 | Blink |
 | Data sent to the model | **1.1 to 1.2 MB** | 1.9 to 2.0 MB | Blink |
 | Failed searches on these sets | 0 | 0 | level |
 
-Blink finds more on generated questions (311 against 298 over three fresh sets, 36 paired wins to 23 losses) and less on hand-written multi-span questions (20 against 26 over three sealed sets), where the spans it still misses are in files it never reaches or ones the model scores low even when it reads them. That is the current work. Blink returns source on no-answer questions a quarter as often, answers in an eighth of the time, and sends 40% less data. Blink has not been released to the team until the hand-written gap closes.
+Blink finds more on generated questions (311 against 298 over three fresh sets, 36 paired wins to 23 losses) and less on hand-written multi-span questions (31 against 36 over four sealed sets; on the newest set, with a declared difficulty mix, 11 against 10). The spans it still misses sit in files it never reaches or score low even when read. Blink returns source on no-answer questions a quarter as often, answers in a sixth of the time or better, and sends 40% less data. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set; the last set was level.
 
 ## Limits
 
