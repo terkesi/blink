@@ -3604,30 +3604,122 @@ fn deepen_plan_includes_implicated_files_after_accepted_ones() {
 }
 
 #[test]
-fn deepen_plan_sweeps_the_files_the_query_words_point_at() {
+fn deepen_plan_sweeps_the_files_the_query_words_point_at_once_something_is_accepted() {
     let root = fixture(0);
     let plain: String = (1..=600).map(|n| format!("line_{n:03}\n")).collect();
     let mut lexical = plain.clone();
     lexical.push_str("fn behavior_entry() { behavior(); }\n");
     fs::write(root.path().join("f000.py"), &plain).unwrap();
     fs::write(root.path().join("f001.py"), &lexical).unwrap();
+    fs::write(root.path().join("f002.py"), "fn item() {}\n").unwrap();
     let prepared = prepare_with_policy(
         &Source::open(root.path()).unwrap(),
         "behavior",
         test_policy(&Options::default()),
         &mut || Control::Continue,
     );
-    let b: Vec<usize> = (0..prepared.windows.len())
-        .filter(|&index| prepared.windows[index].file == 1)
-        .collect();
-    // Only f001 mentions the query word; its last window was read and rejected at 0.0.
-    let probabilities: BTreeMap<usize, Option<f64>> =
-        BTreeMap::from([(*b.last().unwrap(), Some(0.0))]);
+    let windows_of = |file: usize| -> Vec<usize> {
+        (0..prepared.windows.len())
+            .filter(|&index| prepared.windows[index].file == file)
+            .collect()
+    };
+    let (b, c) = (windows_of(1), windows_of(2));
+    let plan =
+        |probabilities: BTreeMap<usize, Option<f64>>, fresh: BTreeSet<usize>| -> Vec<usize> {
+            deepen::plan(
+                &prepared,
+                "behavior",
+                &probabilities,
+                &fresh,
+                0.5,
+                Reservation {
+                    attempts: 20,
+                    bytes: 1000,
+                },
+                Policy {
+                    max_attempts: 60,
+                    max_bytes: 2048 * 1024,
+                    attempt_timeout: Duration::from_secs(5),
+                },
+                &mut || Control::Continue,
+            )
+            .iter()
+            .flat_map(|job| match &job.purpose {
+                Purpose::Source(indices) => indices.clone(),
+                _ => panic!("source jobs only"),
+            })
+            .collect()
+        };
+    // Nothing accepted: the query-word tier stays off, so a no-answer search reads nothing more.
+    let nothing = plan(
+        BTreeMap::from([(*b.last().unwrap(), Some(0.0))]),
+        BTreeSet::new(),
+    );
+    assert!(nothing.is_empty());
+    // The one-window file f002 is accepted (too short to deepen itself); f001 mentions the query
+    // word and its last window was read and rejected at 0.0.
+    let order = plan(
+        BTreeMap::from([(c[0], Some(0.9)), (*b.last().unwrap(), Some(0.0))]),
+        BTreeSet::from([2]),
+    );
+    assert_eq!(
+        order.len(),
+        b.len() - 1,
+        "every unread window of the lexical file, nothing from the other"
+    );
+    assert!(order.iter().all(|index| b.contains(index)));
+    assert_eq!(
+        order[0],
+        b[b.len() - 2],
+        "nearest to the window that mentions the query first"
+    );
+}
+
+#[test]
+fn deepen_plan_sweeps_files_that_declare_what_accepted_code_calls() {
+    let root = fixture(0);
+    let mut caller = String::from("fn entry() {\n    helper_thing();\n}\n");
+    caller.push_str(
+        &(1..=400)
+            .map(|n| format!("line_{n:03}\n"))
+            .collect::<String>(),
+    );
+    let mut callee: String = (1..=300).map(|n| format!("other_{n:03}\n")).collect();
+    callee.push_str("fn helper_thing() {}\n");
+    callee.push_str(
+        &(1..=300)
+            .map(|n| format!("more_{n:03}\n"))
+            .collect::<String>(),
+    );
+    let unrelated: String = (1..=600).map(|n| format!("alone_{n:03}\n")).collect();
+    fs::write(root.path().join("f000.rs"), &caller).unwrap();
+    fs::write(root.path().join("f001.rs"), &callee).unwrap();
+    fs::write(root.path().join("f002.rs"), &unrelated).unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let windows_of = |file: usize| -> Vec<usize> {
+        (0..prepared.windows.len())
+            .filter(|&index| prepared.windows[index].file == file)
+            .collect()
+    };
+    let (a, b, c) = (windows_of(0), windows_of(1), windows_of(2));
+    let declaring = *b
+        .iter()
+        .find(|&&index| {
+            let w = &prepared.windows[index];
+            w.start_line <= 301 && 301 <= w.end_line
+        })
+        .unwrap();
+    // Only the caller's first window is accepted; f001 has never been read and shares no query word.
     let jobs = deepen::plan(
         &prepared,
         "behavior",
-        &probabilities,
-        &BTreeSet::new(),
+        &BTreeMap::from([(a[0], Some(0.9))]),
+        &BTreeSet::from([0]),
         0.5,
         Reservation {
             attempts: 20,
@@ -3647,16 +3739,22 @@ fn deepen_plan_sweeps_the_files_the_query_words_point_at() {
             _ => panic!("source jobs only"),
         })
         .collect();
-    assert_eq!(
-        order.len(),
-        b.len() - 1,
-        "every unread window of the lexical file, nothing from the other"
+    let a_unread = a.len() - 1;
+    assert!(
+        order[..a_unread].iter().all(|index| a.contains(index)),
+        "the accepted file first"
     );
-    assert!(order.iter().all(|index| b.contains(index)));
+    let rest = &order[a_unread..];
     assert_eq!(
-        order[0],
-        b[b.len() - 2],
-        "nearest to the window that mentions the query first"
+        rest.len(),
+        b.len(),
+        "then every window of the file that declares the callee"
+    );
+    assert!(rest.iter().all(|index| b.contains(index)));
+    assert_eq!(rest[0], declaring, "the declaring window first");
+    assert!(
+        order.iter().all(|index| !c.contains(index)),
+        "unrelated files are not read"
     );
 }
 

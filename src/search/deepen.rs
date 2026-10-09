@@ -1,10 +1,11 @@
 use super::*;
 
-/// Plans plain source requests over the unread windows of implicated files, in three tiers: files
+/// Plans plain source requests over the unread windows of implicated files, in four tiers: files
 /// that hold an accepted window, then files whose strongest judged window reached `DEEPEN_FLOOR`,
-/// then the files whose paths and text match the query's words most. Within a file, windows nearest
-/// to the anchor (accepted, strongest, or best-matching window) come first. Files already found to
-/// have changed are skipped in every tier.
+/// then files that declare something accepted code calls, then (only once something was accepted)
+/// the files whose paths and text match the query's words most. Within a file, windows nearest to
+/// the anchor (accepted, strongest, declaring, or best-matching window) come first. Files already
+/// found to have changed are skipped in every tier.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -69,15 +70,87 @@ pub(super) fn plan(
             candidates.push((rank, distance, index));
         }
     }
-    // Third tier: the files the query's own words point at most strongly, even when every window
-    // read there so far scored low, so that a long file is not left half-read on the model's word.
+    // Third tier: files that declare a function, type or constant which accepted code calls, read
+    // from the declaring window outwards. The call graph implicates them even when neither the
+    // model's scores nor the query's words do.
+    let accepted_windows: Vec<usize> = probabilities
+        .iter()
+        .filter(|(index, probability)| {
+            probability.is_some_and(|p| p >= threshold)
+                && fresh.contains(&prepared.windows[**index].file)
+        })
+        .map(|(&index, _)| index)
+        .collect();
+    let text = |index: usize| {
+        let window = &prepared.windows[index];
+        &prepared.snapshot.files()[window.file].text()[window.start..window.end]
+    };
+    let mut called: BTreeSet<&str> = BTreeSet::new();
+    for &index in &accepted_windows {
+        called.extend(callees::calls(text(index)));
+    }
+    let mut callee_files: BTreeMap<usize, usize> = BTreeMap::new();
+    if !called.is_empty() {
+        for index in 0..prepared.windows.len() {
+            if control() != Control::Continue {
+                return VecDeque::new();
+            }
+            let file = prepared.windows[index].file;
+            if strength.contains_key(&file)
+                || stale.contains(&file)
+                || callee_files.contains_key(&file)
+            {
+                continue;
+            }
+            if callees::declarations(text(index))
+                .iter()
+                .any(|name| called.contains(name))
+            {
+                callee_files.insert(file, index);
+            }
+        }
+    }
+    for (position, (&file, &anchor_index)) in callee_files.iter().enumerate() {
+        let unread: Vec<usize> = (0..prepared.windows.len())
+            .filter(|index| {
+                prepared.windows[*index].file == file && !probabilities.contains_key(index)
+            })
+            .collect();
+        if unread.len() < DEEPEN_MIN_UNREAD {
+            continue;
+        }
+        let anchor = &prepared.windows[anchor_index];
+        for index in unread {
+            let window = &prepared.windows[index];
+            // Overlapping neighbours sit at distance zero too, so the declaring window itself
+            // comes first and its neighbours follow by line distance.
+            let distance = if index == anchor_index {
+                0
+            } else {
+                window
+                    .start_line
+                    .saturating_sub(anchor.end_line)
+                    .max(anchor.start_line.saturating_sub(window.end_line))
+                    + 1
+            };
+            candidates.push((2000 + position, distance, index));
+        }
+    }
+    // Fourth tier, only once something was accepted: the files the query's own words point at most
+    // strongly, even when every window read there so far scored low.
     let mut lexical: BTreeMap<usize, usize> = BTreeMap::new();
     for window in &prepared.windows {
         *lexical.entry(window.file).or_insert(0) += window.rank;
     }
     let mut lexical: Vec<(usize, usize)> = lexical
         .into_iter()
-        .filter(|(file, total)| *total > 0 && !strength.contains_key(file) && !stale.contains(file))
+        .filter(|(file, total)| {
+            *total > 0
+                && !accepted_windows.is_empty()
+                && !strength.contains_key(file)
+                && !stale.contains(file)
+                && !callee_files.contains_key(file)
+        })
         .map(|(file, total)| (total, file))
         .collect();
     lexical.sort_by(|a, b| b.cmp(a));
@@ -101,7 +174,7 @@ pub(super) fn plan(
                 .start_line
                 .saturating_sub(anchor.end_line)
                 .max(anchor.start_line.saturating_sub(window.end_line));
-            candidates.push((2000 + position, distance, index));
+            candidates.push((3000 + position, distance, index));
         }
     }
     candidates.sort();
