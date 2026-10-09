@@ -1,21 +1,48 @@
 #!/bin/bash
-# Records the README demo: a real search, then jq over its JSON. Usage: docs/demo.sh /path/to/repo (expects OPENAI_API_KEY).
-cd "${1:?repository root}"
-export PATH="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)/target/release:$PATH"
-type_line() { printf '\033[1;32m$\033[0m '; for ((i=0; i<${#1}; i++)); do printf '%s' "${1:$i:1}"; sleep 0.012; done; printf '\n'; }
+# Records docs/blink.gif: one real search in a plain shell. The command is echoed, then the
+# recording's keystroke events are re-spaced to a typing cadence before rendering; the output,
+# timing of the search, and footer are the real ones.
+# Usage: docs/demo.sh /path/to/repository "question" ROOT   (needs OPENAI_API_KEY, asciinema, agg)
+set -euo pipefail
+repo=${1:?repository}; question=${2:?question}; root=${3:?root}
+here=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+cat > "$work/session.sh" <<SESSION
+export PS1='\[\e[2m\]$(basename "$repo")\[\e[0m\] $ '
+export PATH="$here/target/release:\$PATH"
+cd "$repo"
+clear
+printf '%s' "\$PS1" | sed 's/\\\\\[//g; s/\\\\\]//g' | sed 's/\\\\e/\x1b/g'
+cmd='blink search "$question" $root --limit 1 | head -n 28'
+printf '%s' "\$cmd"
 sleep 0.6
-type_line 'blink search "where does the development server decide to restart when a source file changes" src --json > out.json'
-start=$(python3 -c 'import time; print(time.time())')
-blink search "where does the development server decide to restart when a source file changes" src --json > out.json 2>/dev/null
-end=$(python3 -c 'import time; print(time.time())')
-sleep 0.3
-type_line "jq -r '.results[] | \"\\(.path):\\(.start_line)-\\(.end_line)  probability \\(.probability)\"' out.json"
-jq -r '.results[] | "\u001b[1;36m\(.path):\(.start_line)-\(.end_line)\u001b[0m  probability \(.probability)"' out.json
-sleep 0.8
-type_line "jq -r '.results[0].excerpt' out.json | head -n 14"
-jq -r '.results[0].excerpt' out.json | head -n 14
-sleep 0.8
-type_line "jq -r '\"\\(.budgets.attempts) requests, \\(.budgets.elapsed_ms) ms, \\(.coverage.windows_judged) windows judged\"' out.json"
-jq -r '"\u001b[1m\(.budgets.attempts) requests, \(.budgets.elapsed_ms) ms, \(.coverage.windows_judged) windows judged\u001b[0m"' out.json
-rm -f out.json
-sleep 4
+printf '\r\n'
+eval "\$cmd"
+printf '%s' "\$PS1" | sed 's/\\\\\[//g; s/\\\\\]//g' | sed 's/\\\\e/\x1b/g'
+sleep 1
+SESSION
+asciinema rec --command "bash --noprofile --norc $work/session.sh" --window-size 100x33 --overwrite "$work/demo.cast" >/dev/null
+python3 - "$work/demo.cast" "$work/typed.cast" "blink search \"$question\" $root --limit 1 | head -n 28" <<'PY'
+import json, random, sys
+src, dst, command = sys.argv[1], sys.argv[2], sys.argv[3]
+random.seed(7)
+lines = open(src).read().splitlines()
+header, events = json.loads(lines[0]), [json.loads(l) for l in lines[1:]]
+out = []
+for dt, kind, data in events:
+    if kind == 'o' and data == command:
+        for i, ch in enumerate(data):
+            delay = random.uniform(0.045, 0.12) + (random.uniform(0.0, 0.15) if ch == ' ' else 0.0)
+            out.append([round(1.2 if i == 0 else delay, 3), 'o', ch])
+        continue
+    if kind == 'x':
+        break
+    out.append([round(dt, 3), kind, data])
+with open(dst, 'w') as f:
+    f.write(json.dumps(header) + '\n')
+    for e in out:
+        f.write(json.dumps(e) + '\n')
+PY
+agg --font-size 15 --theme asciinema --idle-time-limit 3 --last-frame-duration 5 "$work/typed.cast" "$here/docs/blink.gif" >/dev/null
+rm -rf "$work"
+echo "wrote docs/blink.gif"

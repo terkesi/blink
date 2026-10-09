@@ -2,7 +2,7 @@
 
 Ask a codebase a question in plain English. Get back the exact source that answers it, in about two seconds.
 
-![A real Blink search: the question, the ranked excerpts with paths and line numbers, and the request count and time](docs/blink.gif)
+![A terminal session: a plain-English question about werkzeug's reloader, three seconds, and the exact function that answers it with its path, line range and probability](docs/blink.gif)
 
 Blink is a command-line code search for coding agents. It reads the working tree, splits files into windows, and asks the OpenAI Decisions API which windows implement the behavior in the question. It returns the matching source verbatim, with the path, line numbers, byte offsets and the file's SHA-256, so an agent can cite and verify what it read. There is no index to build and no background process.
 
@@ -86,4 +86,4 @@ cargo test --locked
 scripts/verify --output /tmp/blink-proof
 ```
 
-[verification.md](docs/verification.md) covers evaluation, benchmarks, proofs, fuzzing and native builds. [reference.md](docs/reference.md) covers search internals, the inventory policy, coverage semantics and the library API. `docs/demo.sh` records the terminal GIF against any repository, and `docs/algorithm-animation.py` draws the search animation from an `evaluate_case` receipt.
+[verification.md](docs/verification.md) covers evaluation, benchmarks, proofs, fuzzing and native builds. [reference.md](docs/reference.md) covers search internals, the inventory policy, coverage semantics and the library API. `docs/demo.sh` records the terminal GIF (a real search; only the typing cadence is re-spaced), and `docs/algorithm-animation.py` draws the search animation from an `evaluate_case` receipt.
