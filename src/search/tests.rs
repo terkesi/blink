@@ -219,8 +219,8 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 64);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 2 * 1024 * 1024);
+    assert_eq!(report.budgets.max_attempts, 80);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 2592 * 1024);
     assert_eq!(report.budgets.timeout_ms, 60_000);
 }
 
@@ -533,17 +533,19 @@ async fn retry_cannot_escape_attempt_or_byte_reservations() {
     let root = fixture(1);
     let server = Server::new(|_, _| Reply::status(503)).await;
     let options = Options::thorough();
-    let report = execute_with_policy(
+    let flat = Policy {
+        max_attempts: 1,
+        max_bytes: 256 * 1024,
+        attempt_timeout: Duration::from_secs(1),
+    };
+    let report = execute_with_policies(
         Source::open(root.path()).unwrap(),
         "query".into(),
         options,
         server.provider(),
         Arc::new(AtomicBool::new(false)),
-        Policy {
-            max_attempts: 1,
-            max_bytes: 256 * 1024,
-            attempt_timeout: Duration::from_secs(1),
-        },
+        flat,
+        Some(flat),
     )
     .await;
     assert_eq!(report.budgets.attempts, 1);
@@ -928,17 +930,19 @@ async fn retry_bytes_are_reserved_before_the_retry_can_reach_the_server() {
     let baseline = Server::new(|request, _| Reply::scores(request, 0.9)).await;
     let first = run(&root, &baseline, Options::default()).await;
     let server = Server::new(|_, _| Reply::status(503)).await;
-    let report = execute_with_policy(
+    let flat = Policy {
+        max_attempts: 8,
+        max_bytes: first.budgets.encoded_request_bytes,
+        attempt_timeout: Duration::from_secs(1),
+    };
+    let report = execute_with_policies(
         Source::open(root.path()).unwrap(),
         "item behavior".into(),
         Options::thorough(),
         server.provider(),
         Arc::new(AtomicBool::new(false)),
-        Policy {
-            max_attempts: 8,
-            max_bytes: first.budgets.encoded_request_bytes,
-            attempt_timeout: Duration::from_secs(1),
-        },
+        flat,
+        Some(flat),
     )
     .await;
     assert_eq!(report.budgets.attempts, 1);
@@ -991,9 +995,11 @@ async fn thorough_policy_judges_more_than_the_default_candidate_quota() {
     let report = run(&fixture(80), &server, Options::thorough()).await;
     assert_eq!(report.exit_code(), 1);
     assert_eq!(report.coverage.windows_judged, 80);
-    assert_eq!(report.budgets.attempts, 10);
-    assert_eq!(report.budgets.max_attempts, 32);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 1024 * 1024);
+    // Ten source batches plus the region preview, as in default mode; the allowances are what
+    // differ (32 initial requests and 1 MiB in the compact test policy, 80 and 2,592 KiB overall).
+    assert_eq!(report.budgets.attempts, 11);
+    assert_eq!(report.budgets.max_attempts, 80);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 2592 * 1024);
     assert!(report.coverage.complete);
 }
 
@@ -1443,42 +1449,45 @@ fn assert_matching_bodies(actual: Vec<Vec<u8>>, expected: Vec<Vec<u8>>) {
 }
 
 #[tokio::test]
-async fn thorough_bodies_and_ledger_match_original_static_batches() {
-    for files in [16, 80, 320] {
+async fn thorough_mode_is_the_default_search_with_larger_allowances() {
+    // Same scope, same scores: thorough sends the same first batches as default (previews and
+    // exploration included) and then keeps reading where default's initial allowance stops.
+    for files in [16, 320] {
         let root = fixture(files);
-        let source = Source::open(root.path()).unwrap();
-        let options = Options::thorough();
-        let prepared =
-            prepare_with_policy(&source, "item behavior", test_policy(&options), &mut || {
-                Control::Continue
-            });
-        let baseline = Server::new(|request, _| Reply::scores(request, 0.1)).await;
-        let mut expected = Reservation::default();
-        for indices in prepared.selected.chunks(BATCH_SIZE) {
-            let batch = source_batch(&prepared, "item behavior", indices).unwrap();
-            expected = reserve(expected, batch.encoded_len(), 32, 1024 * 1024).unwrap();
-            baseline.provider().attempt(&batch).await.unwrap();
-        }
-        let current = Server::new(|request, _| Reply::scores(request, 0.1)).await;
-        let report = run(&root, &current, options).await;
-        assert!(
-            current
-                .bodies()
-                .iter()
-                .all(|body| !is_route(&serde_json::from_slice(body).unwrap()))
+        let default_server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+        let default = run(&root, &default_server, Options::default()).await;
+        let thorough_server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
+        let thorough = run(&root, &thorough_server, Options::thorough()).await;
+        let shared = default
+            .budgets
+            .attempts
+            .min(thorough.budgets.attempts)
+            .min(4);
+        assert_matching_bodies(
+            thorough_server.bodies()[..shared].to_vec(),
+            default_server.bodies()[..shared].to_vec(),
         );
-        assert_matching_bodies(current.bodies(), baseline.bodies());
-        assert_eq!(report.budgets.attempts, expected.attempts);
-        assert_eq!(report.budgets.encoded_request_bytes, expected.bytes);
-        assert_eq!(report.coverage.windows_selected, prepared.selected.len());
-        assert_eq!(report.coverage.windows_judged, prepared.selected.len());
+        assert!(thorough.coverage.windows_judged >= default.coverage.windows_judged);
+        assert!(thorough.budgets.max_attempts > default.budgets.max_attempts);
+        if files == 320 {
+            assert!(
+                thorough_server
+                    .bodies()
+                    .iter()
+                    .any(|body| is_route(&serde_json::from_slice(body).unwrap())),
+                "thorough mode scores previews on large scopes"
+            );
+            assert!(thorough.coverage.windows_judged > default.coverage.windows_judged);
+        }
     }
 }
 
 #[tokio::test]
-async fn thorough_no_fit_never_admits_windows_outside_original_selection() {
+async fn no_fitting_batch_stops_the_search_before_any_request() {
+    // Every planned batch exceeds the byte ceiling: nothing is sent, coverage is honest about it,
+    // and the stop reason names the byte limit. Thorough mode follows the same rule.
     let root = fixture(300);
-    for index in 0..256 {
+    for index in 0..300 {
         fs::write(
             root.path().join(format!("file{index:03}.rs")),
             "\\\"".repeat(1500),
@@ -1508,22 +1517,21 @@ async fn thorough_no_fit_never_admits_windows_outside_original_selection() {
             .is_none()
         );
     }
-    let later = source_batch(&prepared, "neutral", &(256..264).collect::<Vec<_>>()).unwrap();
-    assert!(later.encoded_len() <= policy.max_bytes);
     let server = Server::new(|request, _| Reply::scores(request, 0.1)).await;
-    let report = execute_with_policy(
+    let report = execute_with_policies(
         source,
         "neutral".into(),
         options,
         server.provider(),
         Arc::new(AtomicBool::new(false)),
         policy,
+        Some(policy),
     )
     .await;
     assert!(server.bodies().is_empty());
     assert_eq!(report.budgets.attempts, 0);
     assert_eq!(report.budgets.encoded_request_bytes, 0);
-    assert_eq!(report.coverage.windows_selected, 256);
+    assert_eq!(report.coverage.windows_judged, 0);
     assert_eq!(report.coverage.windows_unjudged, 300);
     assert!(report.budgets.stops.contains(&"request_byte_limit"));
 }
@@ -2997,7 +3005,7 @@ async fn below_threshold_evidence_judgment_does_not_retract_accepted_window() {
 }
 
 #[tokio::test]
-async fn thorough_mode_sends_no_evidence_request() {
+async fn thorough_mode_runs_the_evidence_pass_too() {
     for thorough in [false, true] {
         let root = related_fixture();
         let server = Server::new(|request, _| initial_related_scores(request, 0.1)).await;
@@ -3013,7 +3021,7 @@ async fn thorough_mode_sends_no_evidence_request() {
             .map(|body| serde_json::from_slice::<Value>(body).unwrap())
             .filter(evidence_donor)
             .count();
-        assert_eq!(evidence_requests > 0, !thorough);
+        assert!(evidence_requests > 0, "thorough {thorough}");
     }
 }
 

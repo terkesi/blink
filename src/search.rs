@@ -87,8 +87,8 @@ impl Options {
     fn policy(&self) -> Policy {
         if self.thorough {
             Policy {
-                max_attempts: 64,
-                max_bytes: 2 * 1024 * 1024,
+                max_attempts: 32,
+                max_bytes: 1024 * 1024,
                 attempt_timeout: Duration::from_secs(15),
             }
         } else {
@@ -619,52 +619,55 @@ async fn execute_with_policy(
     cancelled: Arc<AtomicBool>,
     policy: Policy,
 ) -> Report {
-    let initial_policy = policy;
-    let policy = if options.thorough {
-        policy
-    } else {
-        Policy {
-            max_attempts: policy.max_attempts * 2,
-            max_bytes: policy.max_bytes * 2,
-            ..policy
-        }
+    execute_with_policies(source, query, options, provider, cancelled, policy, None).await
+}
+
+/// Runs the search with `policy` as the initial pass's allowance; every later pass derives its
+/// allowance from it. `ceiling`, when given, caps every allowance including retries (tests use it
+/// to pin behaviour at a flat limit).
+async fn execute_with_policies(
+    source: Source,
+    query: String,
+    options: Options,
+    provider: Provider,
+    cancelled: Arc<AtomicBool>,
+    policy: Policy,
+    ceiling: Option<Policy>,
+) -> Report {
+    let cap = |p: Policy| match ceiling {
+        Some(c) => Policy {
+            max_attempts: p.max_attempts.min(c.max_attempts),
+            max_bytes: p.max_bytes.min(c.max_bytes),
+            ..p
+        },
+        None => p,
     };
-    let followup = if options.thorough {
-        policy
-    } else {
-        Policy {
-            max_attempts: policy.max_attempts + CALLEE_JOBS,
-            max_bytes: policy.max_bytes + CALLEE_BYTES,
-            ..policy
-        }
-    };
-    let evidence_policy = if options.thorough {
-        policy
-    } else {
-        Policy {
-            max_attempts: followup.max_attempts + EVIDENCE_JOBS,
-            max_bytes: followup.max_bytes + EVIDENCE_ALLOWANCE,
-            ..policy
-        }
-    };
-    let deepen_policy = if options.thorough {
-        policy
-    } else {
-        Policy {
-            max_attempts: evidence_policy.max_attempts + DEEPEN_JOBS,
-            max_bytes: evidence_policy.max_bytes + DEEPEN_BYTES,
-            ..policy
-        }
-    };
-    let actual_policy = if options.thorough {
-        policy
-    } else {
-        Policy {
-            max_attempts: deepen_policy.max_attempts + 2,
-            max_bytes: deepen_policy.max_bytes + 128 * 1024,
-            ..policy
-        }
-    };
+    let initial_policy = cap(policy);
+    let policy = cap(Policy {
+        max_attempts: policy.max_attempts * 2,
+        max_bytes: policy.max_bytes * 2,
+        ..policy
+    });
+    let followup = cap(Policy {
+        max_attempts: policy.max_attempts + CALLEE_JOBS,
+        max_bytes: policy.max_bytes + CALLEE_BYTES,
+        ..policy
+    });
+    let evidence_policy = cap(Policy {
+        max_attempts: followup.max_attempts + EVIDENCE_JOBS,
+        max_bytes: followup.max_bytes + EVIDENCE_ALLOWANCE,
+        ..policy
+    });
+    let deepen_policy = cap(Policy {
+        max_attempts: evidence_policy.max_attempts + DEEPEN_JOBS,
+        max_bytes: evidence_policy.max_bytes + DEEPEN_BYTES,
+        ..policy
+    });
+    let actual_policy = cap(Policy {
+        max_attempts: deepen_policy.max_attempts + 2,
+        max_bytes: deepen_policy.max_bytes + 128 * 1024,
+        ..policy
+    });
     let mut deepened = false;
     let mut phase = Phase::Initial;
     let mut initial_state = None;
@@ -685,7 +688,7 @@ async fn execute_with_policy(
     let mut prepared = prepare_with_policy(&source, &query, initial_policy, &mut { &control });
     let mut queue = VecDeque::new();
     let mut errors = Vec::new();
-    let mut frontier = navigation::Frontier::new(&prepared, !options.thorough);
+    let mut frontier = navigation::Frontier::new(&prepared, true);
     match frontier.routes(&prepared, &query, &mut { &control }) {
         Ok(routes) => queue.extend(routes.into_iter().map(|(batch, ids)| Job {
             batch,
@@ -702,11 +705,7 @@ async fn execute_with_policy(
     let mut routes_pending = queue.len();
     let mut source_jobs = 0;
     let mut source_exhausted = false;
-    let mut selected = if options.thorough {
-        prepared.selected.iter().copied().collect()
-    } else {
-        BTreeSet::new()
-    };
+    let mut selected = BTreeSet::new();
     let mut tasks = JoinSet::new();
     let mut used = Reservation::default();
     let mut retries = 0;
@@ -878,7 +877,7 @@ async fn execute_with_policy(
                 queue = retries;
                 continue;
             }
-            if phase == Phase::Initial && !options.thorough {
+            if phase == Phase::Initial {
                 phase = Phase::Related;
                 initial_state = Some((probabilities.clone(), fresh.clone(), judgment_events.len()));
                 let donors: BTreeSet<_> = probabilities
@@ -1005,7 +1004,6 @@ async fn execute_with_policy(
             }
             if matches!(phase, Phase::Related | Phase::Callee | Phase::Evidence)
                 && !deepened
-                && !options.thorough
                 && tokio::time::Instant::now() + policy.attempt_timeout
                     <= tokio::time::Instant::from_std(deadline)
             {

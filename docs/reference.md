@@ -4,7 +4,7 @@ The operating details behind the [README](../README.md): how a search spends its
 
 ## Search behavior in detail
 
-Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Declaration detection, used by the callee and deepening passes, covers Python, Rust, JavaScript and TypeScript, Go, Kotlin, Swift, C, Java and Scala keywords. Default searches over larger scopes also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order. Thorough mode retains the original source order without preview requests.
+Blink divides source into windows of at most 80 lines and 4 KiB, with up to eight overlapping lines. Initial source selection combines query terms and paths with exploration across parent directories. Declaration detection, used by the callee and deepening passes, covers Python, Rust, JavaScript and TypeScript, Go, Kotlin, Swift, C, Java and Scala keywords. Searches over larger scopes also use up to two requests to score short region previews. Later source selection follows those priorities while reserving one in four windows for the original search order. Thorough mode runs the same search with larger allowances: a 32-request, 1 MiB initial pass and every later pass scaled from it.
 
 Preview scores guide where to read; they never produce result records. Each source request asks up to eight independent relevance questions. A scope that fits one source request and 32 KiB skips previews.
 
@@ -17,8 +17,8 @@ When accepted records exceed `--limit`, Blink selects the best record from each 
 | Limit | Default | `--thorough` |
 | --- | --- | --- |
 | Search deadline | 30 seconds | 60 seconds |
-| HTTP attempts, including retries | 48 | 64 |
-| Total encoded request bodies | 1,568 KiB | 2 MiB |
+| HTTP attempts, including retries | 48 | 80 |
+| Total encoded request bodies | 1,568 KiB | 2,592 KiB |
 | Concurrent HTTP requests | 16 | 16 |
 | Returned records | 16 | 16 |
 | Encoded stdout | 64 KiB | 64 KiB |
