@@ -45,20 +45,20 @@ Same questions, same checkouts, same scorer, both tools run back to back. A ques
 | | Blink | Reference CLI | Ahead |
 | --- | ---: | ---: | --- |
 | **Finds every required span** | | | |
-| 240 generated questions, two fresh sets (werkzeug, ripgrep) | **212** | 200 | Blink |
-| 24 hand-written multi-span questions (two sealed sets) | 14 | **20** | Reference CLI |
-| Required spans found, hand-written (75) | 64 | **71** | Reference CLI |
+| 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
+| 36 hand-written multi-span questions (three sealed sets) | 20 | **26** | Reference CLI |
+| Required spans found, hand-written (124) | 99 | **111** | Reference CLI |
 | **Stays quiet when there is no answer** | | | |
-| Source returned on 24 no-answer questions, hand-written | **3** | 10 | Blink |
-| Source returned on 80 no-answer questions, generated | **5** | 8 | Blink |
+| Source returned on 36 no-answer questions, hand-written | **5** | 19 | Blink |
+| Source returned on 120 no-answer questions, generated | **9** | 16 | Blink |
 | **Cost of one search (medians)** | | | |
-| Wall time | **2.2 to 2.5 s** | 16 to 19 s | Blink, 7 to 8x |
-| Slowest tenth of searches | **3 s** | 25 to 30 s | Blink |
-| Model requests | **36 to 43** | 50 to 60 | Blink |
-| Data sent to the model | **1.1 to 1.3 MB** | 1.8 to 2.0 MB | Blink |
+| Wall time | **2.4 to 2.5 s** | 18 to 20 s | Blink, 7 to 8x |
+| Slowest tenth of searches | **3 to 4 s** | 29 to 37 s | Blink |
+| Model requests | **40 to 44** | 59 to 62 | Blink |
+| Data sent to the model | **1.1 to 1.2 MB** | 1.9 to 2.0 MB | Blink |
 | Failed searches on these sets | 0 | 0 | level |
 
-Blink finds more on generated questions (212 against 200 over two fresh sets, 25 paired wins to 13 losses) and less on hand-written questions about large files, where the spans Blink still misses are ones the model scores near zero even when it reads them. That is the current work. Blink stays quiet on no-answer questions about three times as often, answers in an eighth of the time, and sends a third less data. Blink has not been released to the team until the hand-written gap closes.
+Blink finds more on generated questions (311 against 298 over three fresh sets, 36 paired wins to 23 losses) and less on hand-written multi-span questions (20 against 26 over three sealed sets), where the spans it still misses are in files it never reaches or ones the model scores low even when it reads them. That is the current work. Blink returns source on no-answer questions a quarter as often, answers in an eighth of the time, and sends 40% less data. Blink has not been released to the team until the hand-written gap closes.
 
 ## Limits
 
