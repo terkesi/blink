@@ -40,26 +40,25 @@ By default the first pass is 64 requests and 2 MiB and reads scopes of up to 512
 
 ## Blink against the Reference CLI
 
-Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`b62f6ac`); receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
+Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`b3b79d2`), whose default search is the former thorough mode; receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
 
 | | Blink | Reference CLI | Ahead |
 | --- | ---: | ---: | --- |
 | **Finds every required span** | | | |
 | 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
-| 60 hand-written multi-span questions (five sealed sets, Python, Rust and TypeScript), default mode | 36 | **43** | Reference CLI |
-| The same 60 questions, `--thorough` | **47** | 43 | Blink, 13 paired wins to 6 losses |
-| Required spans found, hand-written (214), default / thorough | 174 / **196** | 192 | Blink in thorough mode |
+| 60 hand-written multi-span questions (five sealed sets, Python, Rust and TypeScript) | **47** | 43 | Blink, 13 paired wins to 6 losses |
+| Required spans found, hand-written (214) | **196** | 192 | Blink |
 | **Stays quiet when there is no answer** | | | |
-| Source returned on 60 no-answer questions, hand-written, default / thorough | **10** / **12** | 42 | Blink |
+| Source returned on 60 no-answer questions, hand-written | **12** | 42 | Blink |
 | Source returned on 120 no-answer questions, generated | **9** | 16 | Blink |
 | **Cost of one search (medians)** | | | |
-| Wall time, default / thorough | **2.7 to 3.3 s** / **4.6 s** | 15 to 31 s | Blink, 5 to 6x |
-| Slowest tenth of searches, default / thorough | **4 to 5 s** / **7 s** | 29 to 65 s | Blink |
-| Model requests, default / thorough | **41 to 45** / 132 | 56 to 123 | Blink in default mode |
-| Data sent to the model, default / thorough | **1.1 to 1.4 MB** / 3.0 MB | 1.5 to 3.5 MB | Blink in default mode |
-| Failed searches (provider 503s) | 1 of 180 default, 1 of 60 thorough | 2 of 180 | level |
+| Wall time | **4.6 s** (1.9 s on the smallest set) | 15 to 31 s | Blink, 4 to 6x |
+| Slowest tenth of searches | **7 s** | 29 to 65 s | Blink |
+| Model requests | 132 | **56 to 123** | Reference CLI |
+| Data sent to the model | 3.0 MB | **1.5 to 3.5 MB** | level |
+| Failed searches | **0 of 792** (two retries per batch) | 2 of 180 | Blink |
 
-In default mode Blink finds more on generated questions (311 against 298, 36 paired wins to 23 losses) and less on hand-written multi-span questions (36 against 43 over five sealed sets). In `--thorough` mode, which runs the same passes from a 64-request first pass, it finds more than the Reference CLI on those hand-written questions too (47 against 43, 13 paired wins to 6 losses) at a third of the time, while spending more requests. Either way it returns source on no-answer questions a quarter as often. With an agent in the loop (Claude, one mandated search then free verification, 24 questions) the two tools were level at 6 of 12, with Blink's agent finishing in 25 s against 41 s. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set with no more no-answer sources, zero failures and half the cost; thorough mode met the first two clauses on the newest set and default mode has not yet.
+Blink finds more on generated questions (311 against 298, 36 paired wins to 23 losses) and, since its default search became the former thorough mode, more on hand-written multi-span questions too (47 against 43 over five sealed sets, 13 paired wins to 6 losses), while returning source on no-answer questions a quarter as often and finishing in a fifth of the time. The price is requests: the default search reads scopes of up to 512 windows whole and spends about twice the Reference CLI's requests; making that cheaper without changing which windows are judged is the current work. With an agent in the loop (Claude, one mandated search then free verification, 24 questions) the two tools were level at 6 of 12, with Blink's agent finishing in 25 s against 41 s. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set with no more no-answer sources, zero failures and half the cost; the newest set met the first three clauses and failed the cost clause on requests.
 
 ## Limits
 
