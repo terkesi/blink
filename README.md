@@ -36,7 +36,7 @@ npx skills add terkesi/blink --skill blink
 3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows of implicated files (accepted ones, then those the model or the query's own words point at), nearest to their strongest window first.
 4. Rereads every accepted file and compares its hash before output, merges overlapping windows, and returns the best record per directory first.
 
-By default fresh work is capped at 44 requests and 1,408 KiB of request bodies (46 and 1,536 KiB with retries) within 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` allows 64 requests, 2 MiB and 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
+By default fresh work is capped at 46 requests and 1,440 KiB of request bodies (48 and 1,568 KiB with retries) within 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` allows 64 requests, 2 MiB and 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
 
 ## Blink against the Reference CLI
 
@@ -65,8 +65,8 @@ Blink finds more on generated questions (212 against 200 over two fresh sets, 25
 | | Default | `--thorough` |
 | --- | --- | --- |
 | Deadline | 30 s | 60 s |
-| HTTP attempts, including retries | 46 | 64 |
-| Request bodies | 1,536 KiB | 2 MiB |
+| HTTP attempts, including retries | 48 | 64 |
+| Request bodies | 1,568 KiB | 2 MiB |
 | Concurrent requests | 16 | 16 |
 | Records returned (`--limit`, up to 100) | 8 | 8 |
 | Output | 64 KiB | 64 KiB |

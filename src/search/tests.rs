@@ -207,8 +207,8 @@ async fn production_defaults_are_the_documented_limits() {
         Arc::new(AtomicBool::new(false)),
     )
     .await;
-    assert_eq!(report.budgets.max_attempts, 46);
-    assert_eq!(report.budgets.max_encoded_request_bytes, 1536 * 1024);
+    assert_eq!(report.budgets.max_attempts, 48);
+    assert_eq!(report.budgets.max_encoded_request_bytes, 1568 * 1024);
     assert_eq!(report.budgets.max_concurrent_requests, 16);
     assert_eq!(report.budgets.timeout_ms, 30_000);
     let report = execute(
@@ -1632,8 +1632,8 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
             report.budgets.encoded_request_bytes,
             bodies.iter().map(Vec::len).sum::<usize>()
         );
-        assert_eq!(report.budgets.max_attempts, 30);
-        assert_eq!(report.budgets.max_encoded_request_bytes, 1024 * 1024);
+        assert_eq!(report.budgets.max_attempts, 32);
+        assert_eq!(report.budgets.max_encoded_request_bytes, 1056 * 1024);
         let events: Vec<_> = report
             .judgment_events
             .iter()
@@ -2393,7 +2393,7 @@ async fn callee_jobs_follow_the_unchanged_shared_word_jobs() {
             .all(|request| !names(request).contains(&"w100".to_owned()))
     );
     assert_eq!(names(&related[8]), ["w100"]);
-    assert_eq!(report.budgets.attempts, 19);
+    assert_eq!(report.budgets.attempts, 21);
     assert_eq!(
         report
             .judgment_events

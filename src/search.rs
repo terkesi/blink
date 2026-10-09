@@ -32,12 +32,12 @@ const DEEPEN_BYTES: usize = 256 * 1024;
 const DEEPEN_FLOOR: f64 = 0.2;
 const DEEPEN_LEXICAL_FILES: usize = 3;
 const DEEPEN_MIN_UNREAD: usize = 4;
-const EVIDENCE_JOBS: usize = 2;
+const EVIDENCE_JOBS: usize = 4;
 const NOMINATION_CHOICE: f64 = 0.6;
 const EVIDENCE_BATCH: usize = 4;
 const EVIDENCE_BYTES: usize = 12 * 1024;
 const EVIDENCE_LIMIT: usize = EVIDENCE_BYTES + 4096;
-const EVIDENCE_ALLOWANCE: usize = 32 * 1024;
+const EVIDENCE_ALLOWANCE: usize = 64 * 1024;
 const INCLUDE_RELATED_EVIDENCE: bool = true;
 
 #[derive(Clone, Debug)]
