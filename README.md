@@ -36,19 +36,27 @@ npx skills add terkesi/blink --skill blink
 
 By default fresh work is capped at 40 requests and 1.25 MiB of request bodies (42 and 1,408 KiB with retries) within 30 seconds, 16 requests at a time; most searches finish well inside that because the passes stop when there is nothing left worth reading. `--thorough` allows 64 requests, 2 MiB and 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
 
-## Measured against the Reference CLI
+## Blink against the Reference CLI
 
-Both tools answer the same questions on the same checkouts with the same scorer. A question counts only when every required span is inside returned source. Full receipts, hashes and the consumed-versus-fresh status of every set are in [benchmarks](benchmarks/README.md).
+Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. All Blink numbers are the current build; receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
 
-| Set | Blink complete | Reference CLI complete | Source returned on no-answer questions | Median requests | Median time |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 360 generated questions, werkzeug and ripgrep | 300 (83%) | 304 (84%) | 5/120 vs 16/120 | 18 vs 58 to 62 | 2.1 s vs 19 to 21 s |
-| 12 hand-written multi-span questions, starlette and bat | 9 | 11 | 2/12 vs 6/12 | 27 vs 48 | 2.2 s vs 15 s |
-| 12 hand-written multi-span questions in large files, jinja and just | 4 | 9 | 1/12 vs 4/12 | 36 vs 54 | 2.2 s vs 18 s |
+| | Blink | Reference CLI | Ahead |
+| --- | ---: | ---: | --- |
+| **Finds every required span** | | | |
+| 120 generated questions (werkzeug, ripgrep) | **105** | 97 | Blink |
+| 24 hand-written multi-span questions (two sealed sets) | 13 | **20** | Reference CLI |
+| Required spans found, hand-written (75) | 62 | **71** | Reference CLI |
+| **Stays quiet when there is no answer** | | | |
+| Source returned on 24 no-answer questions, hand-written | **3** | 10 | Blink |
+| Source returned on 40 no-answer questions, generated | **3** | 4 | Blink |
+| **Cost of one search (medians)** | | | |
+| Wall time | **2.2 to 2.4 s** | 16 to 19 s | Blink, 7 to 8x |
+| Slowest tenth of searches | **3 s** | 25 to 30 s | Blink |
+| Model requests | **36** | 50 to 60 | Blink |
+| Data sent to the model | **0.9 to 1.1 MB** | 1.8 to 2.0 MB | Blink |
+| Failed searches on these sets | 0 | 0 | level |
 
-The hand-written rows show the current build (`8da285a`, the larger default budget); the Reference CLI columns and the generated row come from the interleaved runs at the previous build, where Blink completed 9 and 2 of those 12 at 14 and 11 median requests.
-
-Blink is level with the Reference CLI on generated questions and cheaper everywhere. On hand-written questions about large files the Reference CLI still finds more; doubling Blink's budget took the large-file set from 2 to 4 complete answers and from 20 to 32 of 41 required spans, so the remaining gap is in which windows get read, and that is the current work. Blink has not been released to the team until it closes. Error trials were zero for Blink on every set above.
+Blink now finds more on generated questions and far less on hand-written questions about large files, where the Reference CLI reads more of each file and reads it more systematically. That is the current work. Blink stays quiet on no-answer questions three times as often, answers in a tenth of the time, and sends half the data. Blink has not been released to the team until the hand-written gap closes.
 
 ## Limits
 
