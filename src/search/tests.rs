@@ -3964,3 +3964,86 @@ fn deepen_common_callee_names_carry_no_signal_and_leave_the_query_word_tier_inta
     );
     assert!(after_m.iter().all(|index| z.contains(index)));
 }
+
+#[test]
+fn deepen_files_the_callee_tier_collects_but_does_not_sweep_stay_eligible_for_the_query_word_tier()
+{
+    let root = fixture(0);
+    let mut caller = String::from(
+        "fn entry() {\n    alpha_fn();\n    beta_fn();\n    gamma_fn();\n    delta_fn();\n}\n",
+    );
+    caller.push_str(
+        &(1..=400)
+            .map(|n| format!("line_{n:03}\n"))
+            .collect::<String>(),
+    );
+    for (name, declared) in [
+        ("a.rs", "alpha_fn"),
+        ("b.rs", "beta_fn"),
+        ("c.rs", "gamma_fn"),
+    ] {
+        let text = format!("fn {declared}() {{}}\n")
+            + &(1..=600)
+                .map(|n| format!("{declared}_{n:03}\n"))
+                .collect::<String>();
+        fs::write(root.path().join(name), text).unwrap();
+    }
+    // The fourth callee file also carries the query word, so it is the top query-word file.
+    let mut d = String::from("fn delta_fn() { behavior(); }\n");
+    d.push_str(
+        &(1..=600)
+            .map(|n| format!("delta_{n:03}\n"))
+            .collect::<String>(),
+    );
+    fs::write(root.path().join("d.rs"), &d).unwrap();
+    fs::write(root.path().join("m.rs"), &caller).unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let file_of = |name: &str| {
+        prepared
+            .snapshot
+            .files()
+            .iter()
+            .position(|f| f.path() == name)
+            .unwrap()
+    };
+    let windows_of = |file: usize| -> Vec<usize> {
+        (0..prepared.windows.len())
+            .filter(|&index| prepared.windows[index].file == file)
+            .collect()
+    };
+    let m = windows_of(file_of("m.rs"));
+    let d_windows = windows_of(file_of("d.rs"));
+    let jobs = deepen::plan(
+        &prepared,
+        "behavior",
+        &BTreeMap::from([(m[0], Some(0.9))]),
+        &BTreeSet::from([file_of("m.rs")]),
+        0.5,
+        Reservation {
+            attempts: 20,
+            bytes: 1000,
+        },
+        Policy {
+            max_attempts: 60,
+            max_bytes: 2048 * 1024,
+            attempt_timeout: Duration::from_secs(5),
+        },
+        &mut || Control::Continue,
+    );
+    let order: Vec<usize> = jobs
+        .iter()
+        .flat_map(|job| match &job.purpose {
+            Purpose::Source(indices) => indices.clone(),
+            _ => panic!("source jobs only"),
+        })
+        .collect();
+    assert!(
+        d_windows.iter().all(|index| order.contains(index)),
+        "d.rs is swept by the query-word tier although the callee tier collected it: {order:?} d {d_windows:?}"
+    );
+}
