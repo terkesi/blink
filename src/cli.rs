@@ -40,7 +40,7 @@ pub enum Command {
         root: PathBuf,
         #[arg(long)]
         thorough: bool,
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, default_value_t = 16)]
         limit: usize,
         #[arg(long, value_parser = timeout_seconds, help = "Whole-operation timeout in seconds, up to 300")]
         timeout: Option<Duration>,

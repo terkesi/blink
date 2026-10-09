@@ -68,7 +68,7 @@ Blink finds more on generated questions (311 against 298 over three fresh sets, 
 | HTTP attempts, including retries | 48 | 64 |
 | Request bodies | 1,568 KiB | 2 MiB |
 | Concurrent requests | 16 | 16 |
-| Records returned (`--limit`, up to 100) | 8 | 8 |
+| Records returned (`--limit`, up to 100) | 16 | 16 |
 | Output | 64 KiB | 64 KiB |
 
 Exit codes: 0 results or completed; 1 no matches after judging the whole scope; 2 invalid invocation or configuration; 3 failed or incomplete; 130 interrupted.

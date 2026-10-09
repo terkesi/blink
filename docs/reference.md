@@ -20,7 +20,7 @@ When accepted records exceed `--limit`, Blink selects the best record from each 
 | HTTP attempts, including retries | 48 | 64 |
 | Total encoded request bodies | 1,568 KiB | 2 MiB |
 | Concurrent HTTP requests | 16 | 16 |
-| Returned records | 8 | 8 |
+| Returned records | 16 | 16 |
 | Encoded stdout | 64 KiB | 64 KiB |
 
 `--limit` accepts 1 through 100 records. `--timeout` overrides the deadline with a positive number of seconds, up to 300. Default fresh work is limited to forty-six requests and 1,440 KiB: an initial pass of at most sixteen requests and 512 KiB, a shared-identifier follow-up within thirty-two requests and 1 MiB, up to two callee requests, up to four evidence requests, and up to eight deepening requests. The remaining allowance is reserved for retries. Every actual attempt counts against one shared ledger, so an early retry can reduce later fresh work. Each batch, including a preview batch, can retry once after a transient failure within the attempt, byte, and time limits. A window the provider refuses to judge in a batch is asked once more on its own after the current pass finishes its fresh work, when a full attempt timeout remains and, for follow-up windows, its caller is still accepted. That request counts as a retry in the shared ledger, so like any retry it can reduce later fresh work. A second refusal or a failed retry leaves the window unjudged without failing the search. Redirects and automatic HTTP-client retries are disabled. Cancellation drops local requests; it cannot recall work already received by the provider.

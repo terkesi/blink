@@ -51,7 +51,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             thorough: false,
-            limit: 8,
+            limit: 16,
             timeout: Duration::from_secs(30),
             threshold: 0.5,
         }
