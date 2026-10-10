@@ -1,6 +1,6 @@
 # Blink
 
-Ask a codebase a question in plain English. Get back the exact source that answers it, in about two seconds.
+Ask a codebase a question in plain English. Get back the exact source that answers it, in a few seconds.
 
 ![A terminal session: a plain-English question about werkzeug's reloader, three seconds, and the exact function that answers it with its path, line range and probability](docs/blink.gif)
 
@@ -8,7 +8,7 @@ Blink is a command-line code search for coding agents. It reads the working tree
 
 ## Why it exists
 
-Agents spend most of a task finding the right code. Exact-text search needs the right identifier; reading files by hand burns context. The tools that answer behavioral questions well tend to take 15 to 20 seconds and 50 or more model calls per question, which is too slow inside an agent loop. Blink answers the same kind of question in about 2 seconds with 20 to 40 calls, stays quiet when the behavior does not exist, and never returns source it did not read byte for byte.
+Agents spend most of a task finding the right code. Exact-text search needs the right identifier; reading files by hand burns context. The tools that answer behavioral questions well take 15 to 40 seconds per question, too slow inside an agent loop. Blink answers the same kind of question in three to five seconds, stays quiet when the behavior does not exist, and never returns source it did not read byte for byte. It spends more model calls than those tools to do it; that cost is in the table below.
 
 ## Quick start
 
@@ -33,7 +33,7 @@ npx skills add terkesi/blink --skill blink
 
 1. Lists eligible files under the root: UTF-8 text, `.gitignore` honoured, hidden, dependency, build and credential paths excluded.
 2. On scopes beyond 512 windows, scores short previews of the repository's regions, then judges up to eight 80-line windows per request, each with its own yes-or-no question plus one listwise question ("which of these, if any, is the answer?").
-3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with each candidate's enclosing declaration and a verified caller or use site attached alongside the accepted excerpts, and the unread windows of implicated files (accepted ones, then those the model's scores, the call graph or the query's own words point at), nearest to their anchor first.
+3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses (each shown with its enclosing declaration, a verified caller or use site, and the accepted excerpts), and the unread windows of implicated files, nearest to their anchor first.
 4. Rereads every accepted file and compares its hash before output, merges overlapping windows, and returns the best record per directory first.
 
 By default the first pass is 64 requests and 2 MiB and reads scopes of up to 512 windows whole; fresh work overall is capped at 142 requests and 4,512 KiB (150 and 5,024 KiB with retries) within 30 seconds, 32 requests at a time, and the passes stop when there is nothing left worth reading. `--thorough` doubles every allowance (a 128-request first pass, scopes of up to 1,024 windows read whole, 286 requests and 9.4 MiB) within 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
@@ -48,7 +48,7 @@ Same questions, same checkouts, same scorer, both tools run back to back. A ques
 | 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
 | 720 generated positives, regression seeds (werkzeug, ripgrep) | **675** | not run | |
 | 96 hand-written multi-span questions (eight sealed sets, Python, Rust and TypeScript) | **77** | 72 | Blink |
-| The newest set alone (requests, serde), fresh for the `e495183` gate run | 9 (11 at the current build) | 9 | level at the gate run |
+| The newest set alone (requests, serde), run fresh against the frozen `e495183` build | 9 | 9 | level |
 | Required spans found, hand-written (353) | **325** | 315 | Blink |
 | **Stays quiet when there is no answer** | | | |
 | Source returned on 96 no-answer questions, hand-written | **22** | 68 | Blink |
@@ -61,7 +61,7 @@ Same questions, same checkouts, same scorer, both tools run back to back. A ques
 | Data sent to the model | 3.0 to 3.3 MB | **1.1 to 4.9 MB** | Reference CLI on most sets |
 | Failed searches | **0 of 864** (two retries per batch) | 4 of 252 | Blink |
 
-Blink finds more on generated questions (311 against 298, 36 paired wins to 23 losses) and is level on hand-written multi-span questions over eight sealed sets (73 against 72). The newest set, run fresh against this frozen build, was level on completeness (9 against 9, the same nine questions) with Blink ahead on spans (36 against 34) and quieter on no-answer questions (2 against 5); the four spans Blink missed there were read and scored below the threshold. The latest change, keeping a window's best judgment across passes instead of its last, recovered 30 of 720 generated questions and 3 of the newest set's 12 at zero extra requests. Blink returns source on no-answer questions a third as often and finishes in a fifth of the time, while spending about twice the requests. With an agent in the loop (Claude, one mandated search then free verification, 24 questions) the two tools were level at 6 of 12, with Blink's agent finishing in 25 s against 41 s. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set with no more no-answer sources, zero failures and half the cost; the newest set met the first three clauses and failed the cost clause on requests and bytes, so Blink is released to the team with that cost stated.
+Blink finds more than the Reference CLI on both question families, returns source on no-answer questions a third as often, has not failed a search in 864 runs, and finishes in a fifth of the time. It spends about four times the model requests on most sets. The pooled hand-written lead (77 against 72) includes sets that steered later changes; the only clean evidence is the newest set, run with the build frozen before the questions were written, where the two tools completed the same nine of twelve and Blink found more spans (36 against 34) with fewer false sources (2 against 5). Every span Blink missed there had been read and scored below the threshold. With an agent in the loop (Claude, one mandated search then free verification, 24 questions) the tools were level at 6 of 12, Blink's agent finishing in 25 s against 41 s. The release [gate](benchmarks/README.md#the-gate) asks for a paired win on a fresh set with no more no-answer sources, zero failures and half the cost; the newest set met the first three clauses and failed the cost clause, so Blink is released with that cost stated.
 
 ## Limits
 
