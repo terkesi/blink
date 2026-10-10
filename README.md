@@ -47,21 +47,21 @@ Same questions, same checkouts, same scorer, both tools run back to back. A ques
 | **Finds every required span** | | | |
 | 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
 | 720 generated positives, regression seeds (werkzeug, ripgrep) | **666** | not run | |
-| 84 hand-written multi-span questions (seven sealed sets, Python, Rust and TypeScript) | **64** | 63 | level |
-| The newest set alone (pydantic, clap), fresh for this build | 7 | **9** | Reference CLI, 3 paired wins to 5 losses |
-| Required spans found, hand-written (313) | 281 | **281** | level |
+| 96 hand-written multi-span questions (eight sealed sets, Python, Rust and TypeScript) | **73** | 72 | level |
+| The newest set alone (requests, serde), fresh for this build | 9 | 9 | level (no paired wins or losses) |
+| Required spans found, hand-written (353) | **317** | 315 | level |
 | **Stays quiet when there is no answer** | | | |
-| Source returned on 84 no-answer questions, hand-written | **20** | 63 | Blink |
+| Source returned on 96 no-answer questions, hand-written | **22** | 68 | Blink |
 | Source returned on 240 no-answer questions, regression seeds | **22** | not run | |
 | Source returned on 120 no-answer questions, generated | **9** | 16 | Blink |
 | **Cost of one search (medians)** | | | |
-| Wall time | **3.5 to 4.6 s** | 15 to 44 s | Blink, 4 to 12x |
-| Slowest tenth of searches | **5 to 7 s** | 29 to 68 s | Blink |
-| Model requests | 132 to 142 | **51 to 178** | mixed |
-| Data sent to the model | 3.0 to 3.3 MB | **1.5 to 4.9 MB** | level |
-| Failed searches | **0 of 840** (two retries per batch) | 4 of 228 | Blink |
+| Wall time | **2.8 to 4.6 s** | 11 to 44 s | Blink, 4 to 12x |
+| Slowest tenth of searches | **4 to 7 s** | 29 to 68 s | Blink |
+| Model requests | 125 to 142 | **32 to 178** | Reference CLI on most sets |
+| Data sent to the model | 3.0 to 3.3 MB | **1.1 to 4.9 MB** | Reference CLI on most sets |
+| Failed searches | **0 of 864** (two retries per batch) | 4 of 252 | Blink |
 
-Blink finds more on generated questions (311 against 298, 36 paired wins to 23 losses) and is level on hand-written multi-span questions over seven sealed sets (64 against 63). The newest set, run fresh against this build, went to the Reference CLI 9 to 7: of the twelve spans Blink missed there, eight were in files it had opened but not read at the right place and four it read and scored below the threshold. The latest change, keeping a window's best judgment across passes instead of its last, recovered 30 of 720 generated questions and 3 of the newest set's 12 at zero extra requests. Blink returns source on no-answer questions a third as often and finishes in a fifth of the time, while spending about twice the requests. With an agent in the loop (Claude, one mandated search then free verification, 24 questions) the two tools were level at 6 of 12, with Blink's agent finishing in 25 s against 41 s. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set with no more no-answer sources, zero failures and half the cost; the newest set failed the first clause (3 paired wins to 5 losses) and met the other three.
+Blink finds more on generated questions (311 against 298, 36 paired wins to 23 losses) and is level on hand-written multi-span questions over eight sealed sets (73 against 72). The newest set, run fresh against this frozen build, was level on completeness (9 against 9, the same nine questions) with Blink ahead on spans (36 against 34) and quieter on no-answer questions (2 against 5); the four spans Blink missed there were read and scored below the threshold. The latest change, keeping a window's best judgment across passes instead of its last, recovered 30 of 720 generated questions and 3 of the newest set's 12 at zero extra requests. Blink returns source on no-answer questions a third as often and finishes in a fifth of the time, while spending about twice the requests. With an agent in the loop (Claude, one mandated search then free verification, 24 questions) the two tools were level at 6 of 12, with Blink's agent finishing in 25 s against 41 s. The [gate](benchmarks/README.md#the-gate) for releasing it to the team is a paired win on a fresh sealed set with no more no-answer sources, zero failures and half the cost; the newest set met the first three clauses and failed the cost clause on requests and bytes, so Blink is released to the team with that cost stated.
 
 ## Limits
 
