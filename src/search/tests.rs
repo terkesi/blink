@@ -800,7 +800,7 @@ async fn malformed_answers_are_errors_and_do_not_leak_provider_text() {
 }
 
 #[tokio::test]
-async fn encoded_output_limit_preserves_records_and_never_calls_omitted_matches_empty() {
+async fn encoded_output_limit_trims_a_huge_record_to_the_windows_that_fit() {
     let root = fixture(0);
     fs::write(root.path().join("huge.rs"), "\"\\\n".repeat(12_000)).unwrap();
     let server = Server::new(|request, _| Reply::scores(request, 0.9)).await;
@@ -811,9 +811,11 @@ async fn encoded_output_limit_preserves_records_and_never_calls_omitted_matches_
     assert!(bytes.len() <= MAX_OUTPUT_BYTES);
     let value: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(value["output_truncated"], true);
-    assert!(value["results"].as_array().unwrap().is_empty());
-    assert_eq!(report.exit_code(), 3);
-    assert!(report.omitted_results > 0);
+    // The one accepted file is far larger than the output limit: its record is trimmed window
+    // by window until what remains fits, instead of vanishing.
+    let kept = value["results"].as_array().unwrap();
+    assert!(!kept.is_empty());
+    assert!(kept.iter().all(|r| r["path"] == "huge.rs"));
 }
 
 #[tokio::test]
@@ -4150,20 +4152,34 @@ async fn output_limit_drops_the_weakest_records_first_in_json_and_text() {
         .map(|r| r["path"].as_str().unwrap())
         .collect();
     assert!(value["output_truncated"].as_bool().unwrap());
-    assert!(
-        !paths.contains(&"y/c.rs"),
-        "the 0.5 record goes first: {paths:?}"
-    );
+    // The 0.5 record gives up windows first; the stronger records keep every line.
+    let lines = |path: &str| {
+        value["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["path"] == path)
+            .map(|r| r["end_line"].as_u64().unwrap() - r["start_line"].as_u64().unwrap())
+    };
+    assert!(lines("y/c.rs").is_none_or(|n| n < 5_999), "{paths:?}");
+    assert_eq!(lines("x/a.rs"), Some(5_999));
     assert_eq!(paths[0], "x/a.rs");
     let mut text_report = run(&root, &server, options).await;
     let text = String::from_utf8(text_report.encode_text()).unwrap();
     assert!(text.len() <= MAX_OUTPUT_BYTES);
-    assert!(!text.contains("y/c.rs"), "text drops the same record first");
-    assert!(text.contains("x/b.rs") && text.contains("x/a.rs"));
+    // The weakest record (y/c at 0.5) gives up windows first, in both encodings.
+    let shrunk = |r: &ResultRecord| r.end_line - r.start_line < 5_999;
     assert!(
-        text_report.output_truncated && text_report.omitted_results == 2,
-        "one by the limit, one by the output cap"
+        text_report
+            .results
+            .iter()
+            .any(|r| r.path == "y/c.rs" && shrunk(r))
+            || !text.contains("y/c.rs"),
+        "text trims the same record first"
     );
+    assert!(text.contains("x/b.rs") && text.contains("x/a.rs"));
+    assert!(text_report.output_truncated);
+    assert!(text_report.omitted_results >= 1, "one record by the limit");
 }
 
 #[tokio::test]
@@ -4206,12 +4222,18 @@ async fn output_limit_drops_a_record_that_can_never_fit_before_a_weaker_one_that
         .iter()
         .map(|r| r["path"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        paths,
-        ["x/a.rs", "y/c.rs"],
-        "the oversized record goes, the weak one that fits stays"
-    );
-    assert_eq!(report.omitted_results, 1);
+    // The oversized record (0.95) is trimmed window by window until it fits, and the weaker
+    // records give up windows next; no record disappears while it still has a window that fits.
+    assert!(paths.contains(&"x/b.rs"), "{paths:?}");
+    assert!(value["output_truncated"].as_bool().unwrap());
+    let b = value["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "x/b.rs")
+        .unwrap();
+    assert!(serde_json::to_vec(b).unwrap().len() <= MAX_OUTPUT_BYTES);
+    assert!(bytes.len() <= MAX_OUTPUT_BYTES);
 }
 
 #[test]
@@ -4264,4 +4286,50 @@ async fn shared_identifier_jobs_reread_a_donor_file_once_per_phase() {
         report.coverage.source.bytes_read,
         big.len()
     );
+}
+
+#[tokio::test]
+async fn trimming_never_returns_more_records_than_the_limit() {
+    // One file far larger than the output limit, every window accepted, one weak window in the
+    // middle: trimming must shrink the record from its ends, not split it into two.
+    let root = fixture(0);
+    let text: String = (0..2_000)
+        .map(|n| format!("fn item_{n:05}() {{ \"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\" }}\n"))
+        .collect();
+    fs::write(root.path().join("big.rs"), &text).unwrap();
+    let server = Server::new(|request, _| {
+        let input: Value = serde_json::from_str(request["input"].as_str().unwrap()).unwrap();
+        let mut reply = Reply::scores(request, 0.9);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            let candidate = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == answer["name"]);
+            if candidate.is_some_and(|c| {
+                c["start_line"]
+                    .as_u64()
+                    .is_some_and(|l| (900..1000).contains(&l))
+            }) && answer["type"] == "predicate"
+            {
+                answer["probability"] = json!(0.55);
+            }
+        }
+        reply
+    })
+    .await;
+    let mut report = run(
+        &root,
+        &server,
+        Options {
+            limit: 1,
+            ..Options::thorough()
+        },
+    )
+    .await;
+    let bytes = report.encode_json().unwrap();
+    assert!(bytes.len() <= MAX_OUTPUT_BYTES);
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
+    assert!(value["output_truncated"].as_bool().unwrap());
 }

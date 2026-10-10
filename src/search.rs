@@ -336,6 +336,11 @@ pub struct ResultRecord {
     pub end_line: usize,
     pub probability: f64,
     pub excerpt: String,
+    /// The accepted windows this record was merged from (start byte, end byte, start line, end
+    /// line, probability), so that output trimming can drop the weakest window of a long record
+    /// instead of the whole record.
+    #[serde(skip)]
+    pub parts: Vec<(usize, usize, usize, usize, f64)>,
 }
 #[derive(Clone, Debug)]
 pub struct RawJudgment {
@@ -434,11 +439,9 @@ impl Report {
                 return Ok(bytes);
             }
             self.output_truncated = true;
-            if let Some(weakest) = self.weakest_result(|record| {
+            if self.shrink_weakest(|record| {
                 serde_json::to_vec(record).map_or(usize::MAX, |bytes| bytes.len())
             }) {
-                self.results.remove(weakest);
-                self.omitted_results += 1;
             } else if !self.coverage.source.issues.is_empty() {
                 let keep = self.coverage.source.issues.len() / 2;
                 self.omitted_metadata_records += self.coverage.source.issues.len() - keep;
@@ -454,10 +457,12 @@ impl Report {
             }
         }
     }
-    /// The record to drop first when output must shrink: a record that cannot fit on its own
-    /// (largest first), otherwise the lowest probability, latest on ties, so the output keeps the
-    /// model's most confident evidence rather than the first-listed.
-    fn weakest_result(&self, rendered: impl Fn(&ResultRecord) -> usize) -> Option<usize> {
+    /// Shrinks the output by one step: the weakest record loses the weaker of its first and last
+    /// windows and stays one contiguous range; a record with one window left is dropped. Returns
+    /// false when there is nothing left to shrink.
+    fn shrink_weakest(&mut self, rendered: impl Fn(&ResultRecord) -> usize) -> bool {
+        // An oversized record is trimmed first; otherwise the record holding the weakest window
+        // overall (lowest probability, latest on ties) gives that window up.
         let oversized = self
             .results
             .iter()
@@ -465,14 +470,56 @@ impl Report {
             .filter(|(_, record)| rendered(record) > MAX_OUTPUT_BYTES)
             .max_by_key(|(_, record)| rendered(record))
             .map(|(index, _)| index);
-        oversized.or_else(|| {
+        let weakest_part = |record: &ResultRecord| {
+            record
+                .parts
+                .iter()
+                .map(|part| part.4)
+                .fold(record.probability, f64::min)
+        };
+        let Some(index) = oversized.or_else(|| {
             self.results
                 .iter()
                 .enumerate()
                 .rev()
-                .min_by(|(_, a), (_, b)| a.probability.total_cmp(&b.probability))
+                .min_by(|(_, a), (_, b)| weakest_part(a).total_cmp(&weakest_part(b)))
                 .map(|(index, _)| index)
-        })
+        }) else {
+            return false;
+        };
+        let record = self.results.remove(index);
+        if record.parts.len() <= 1 {
+            self.omitted_results += 1;
+            return true;
+        }
+        // Trim from an end so the record stays one contiguous range (the record count never
+        // grows past `--limit` and probability order is kept): the weaker of the first and last
+        // windows goes, the last on ties.
+        let mut parts = record.parts.clone();
+        parts.sort_by_key(|part| part.0);
+        let first = parts[0];
+        let last = parts[parts.len() - 1];
+        if last.4 <= first.4 {
+            parts.pop();
+        } else {
+            parts.remove(0);
+        }
+        let start_byte = parts[0].0;
+        let end_byte = parts.iter().map(|part| part.1).max().expect("parts remain");
+        let rebuilt = ResultRecord {
+            path: record.path.clone(),
+            sha256: record.sha256.clone(),
+            start_byte,
+            end_byte,
+            start_line: parts[0].2,
+            end_line: parts.iter().map(|part| part.3).max().expect("parts remain"),
+            probability: parts.iter().map(|part| part.4).fold(f64::MIN, f64::max),
+            excerpt: record.excerpt[start_byte - record.start_byte..end_byte - record.start_byte]
+                .to_owned(),
+            parts,
+        };
+        self.results.insert(index, rebuilt);
+        true
     }
     fn render_text(record: &ResultRecord) -> String {
         let mut text = format!(
@@ -503,12 +550,8 @@ impl Report {
                 break;
             }
             self.output_truncated = true;
-            match self.weakest_result(|record| Self::render_text(record).len()) {
-                Some(weakest) => {
-                    self.results.remove(weakest);
-                    self.omitted_results += 1;
-                }
-                None => break,
+            if !self.shrink_weakest(|record| Self::render_text(record).len()) {
+                break;
             }
         }
         let mut bytes = Vec::new();
@@ -1411,6 +1454,13 @@ fn merge(
             last.end_line = last.end_line.max(window.end_line);
             last.probability = last.probability.max(probability);
             last.excerpt = file.text()[last.start_byte..last.end_byte].into();
+            last.parts.push((
+                window.start,
+                window.end,
+                window.start_line,
+                window.end_line,
+                probability,
+            ));
         } else {
             results.push(ResultRecord {
                 path: file.path().into(),
@@ -1421,6 +1471,13 @@ fn merge(
                 end_line: window.end_line,
                 probability,
                 excerpt: file.text()[window.start..window.end].into(),
+                parts: vec![(
+                    window.start,
+                    window.end,
+                    window.start_line,
+                    window.end_line,
+                    probability,
+                )],
             });
         }
     }
