@@ -40,16 +40,16 @@ By default the first pass is 64 requests and 2 MiB and reads scopes of up to 512
 
 ## Blink against the Reference CLI
 
-Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`e495183`); receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
+Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`fec45f1`, which trims output one window at a time) and the frozen `e495183` gate run; receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
 
 | | Blink | Reference CLI | Ahead |
 | --- | ---: | ---: | --- |
 | **Finds every required span** | | | |
 | 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
-| 720 generated positives, regression seeds (werkzeug, ripgrep) | **666** | not run | |
-| 96 hand-written multi-span questions (eight sealed sets, Python, Rust and TypeScript) | **73** | 72 | level |
+| 720 generated positives, regression seeds (werkzeug, ripgrep) | **668** | not run | |
+| 96 hand-written multi-span questions (eight sealed sets, Python, Rust and TypeScript) | **74** | 72 | level |
 | The newest set alone (requests, serde), fresh for this build | 9 | 9 | level (no paired wins or losses) |
-| Required spans found, hand-written (353) | **317** | 315 | level |
+| Required spans found, hand-written (353) | **320** | 315 | Blink |
 | **Stays quiet when there is no answer** | | | |
 | Source returned on 96 no-answer questions, hand-written | **22** | 68 | Blink |
 | Source returned on 240 no-answer questions, regression seeds | **22** | not run | |
