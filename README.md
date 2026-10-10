@@ -33,23 +33,23 @@ npx skills add terkesi/blink --skill blink
 
 1. Lists eligible files under the root: UTF-8 text, `.gitignore` honoured, hidden, dependency, build and credential paths excluded.
 2. On scopes beyond 512 windows, scores short previews of the repository's regions, then judges up to eight 80-line windows per request, each with its own yes-or-no question plus one listwise question ("which of these, if any, is the answer?").
-3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with all accepted excerpts attached, and the unread windows of implicated files (accepted ones, then those the model's scores, the call graph or the query's own words point at), nearest to their anchor first.
+3. Follows the evidence: windows that share identifiers with accepted code, the definitions that accepted code calls, a second look at near misses with each candidate's enclosing declaration and a verified caller or use site attached alongside the accepted excerpts, and the unread windows of implicated files (accepted ones, then those the model's scores, the call graph or the query's own words point at), nearest to their anchor first.
 4. Rereads every accepted file and compares its hash before output, merges overlapping windows, and returns the best record per directory first.
 
 By default the first pass is 64 requests and 2 MiB and reads scopes of up to 512 windows whole; fresh work overall is capped at 142 requests and 4,512 KiB (150 and 5,024 KiB with retries) within 30 seconds, 32 requests at a time, and the passes stop when there is nothing left worth reading. `--thorough` doubles every allowance (a 128-request first pass, scopes of up to 1,024 windows read whole, 286 requests and 9.4 MiB) within 60 seconds. The exact passes, budgets and the JSON schema are in the [reference](docs/reference.md).
 
 ## Blink against the Reference CLI
 
-Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`fec45f1`, which trims output one window at a time) and the frozen `e495183` gate run; receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
+Same questions, same checkouts, same scorer, both tools run back to back. A question counts as answered only when every required span is inside the returned source. Blink numbers are from the current build (`70ebc5e`) and the frozen `e495183` gate run; receipts, hashes and the status of every set are in [benchmarks](benchmarks/README.md).
 
 | | Blink | Reference CLI | Ahead |
 | --- | ---: | ---: | --- |
 | **Finds every required span** | | | |
 | 360 generated questions, three fresh sets (werkzeug, ripgrep) | **311** | 298 | Blink |
-| 720 generated positives, regression seeds (werkzeug, ripgrep) | **668** | not run | |
-| 96 hand-written multi-span questions (eight sealed sets, Python, Rust and TypeScript) | **74** | 72 | level |
-| The newest set alone (requests, serde), fresh for this build | 9 | 9 | level (no paired wins or losses) |
-| Required spans found, hand-written (353) | **320** | 315 | Blink |
+| 720 generated positives, regression seeds (werkzeug, ripgrep) | **675** | not run | |
+| 96 hand-written multi-span questions (eight sealed sets, Python, Rust and TypeScript) | **77** | 72 | Blink |
+| The newest set alone (requests, serde), fresh for the `e495183` gate run | 9 (11 at the current build) | 9 | level at the gate run |
+| Required spans found, hand-written (353) | **325** | 315 | Blink |
 | **Stays quiet when there is no answer** | | | |
 | Source returned on 96 no-answer questions, hand-written | **22** | 68 | Blink |
 | Source returned on 240 no-answer questions, regression seeds | **22** | not run | |
