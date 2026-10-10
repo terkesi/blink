@@ -1967,6 +1967,7 @@ fn related_plan_packs_discontiguous_admissions_before_rejudgments() {
             max_bytes: 512 * 1024,
             attempt_timeout: Duration::from_secs(5),
         },
+        true,
         &mut || Control::Continue,
     );
     assert_eq!(stop, None);
@@ -2106,6 +2107,7 @@ fn related_plan_prioritizes_stronger_relationship_before_source_ordinal() {
             max_bytes: 512 * 1024,
             attempt_timeout: Duration::from_secs(5),
         },
+        true,
         &mut || Control::Continue,
     );
     let plan: Vec<_> = jobs
@@ -2948,6 +2950,575 @@ async fn evidence_request_carries_accepted_excerpts_with_headers_within_cap() {
     assert!(!text.contains("b.rs"));
 }
 
+/// A helper declared inside an `impl` block long enough that its window starts inside another
+/// method, with its caller in a different file: the shape of the miss ledger's trait-default
+/// and helper cases. `a.rs` is `w0`, `b.rs` is `w1` (lines 1-80) and `w2` (lines 73-93).
+fn relation_fixture() -> TempDir {
+    let root = fixture(0);
+    fs::write(
+        root.path().join("a.rs"),
+        "fn caller() { distinctive_helper(); }\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("b.rs"), widget_file("", "")).unwrap();
+    root
+}
+
+fn widget_file(suffix: &str, helper_suffix: &str) -> String {
+    let mut text = format!("impl Widget{suffix} {{\n    fn long_method{suffix}(&self) {{\n");
+    for step in 0..88 {
+        text.push_str(&format!("        step{suffix}_{step}();\n"));
+    }
+    text.push_str(&format!(
+        "    }}\n    fn distinctive_helper{helper_suffix}(&self) {{}}\n}}\n"
+    ));
+    text
+}
+
+/// Six helpers in six files share one caller whose surrounding lines are long, so the
+/// relation context of a full batch only fits after the excerpts shrink.
+fn relation_budget_fixture() -> TempDir {
+    let root = fixture(0);
+    let padding = |name: &str| format!("    let {name} = \"{}\";\n", "x".repeat(140));
+    fs::write(
+        root.path().join("a.rs"),
+        format!(
+            "fn caller() {{\n{}{}    distinctive_helper();\n{}{}{}}}\n",
+            padding("first_padding_line"),
+            padding("second_padding_line"),
+            padding("third_padding_line"),
+            padding("fourth_padding_line"),
+            padding("fifth_padding_line"),
+        ),
+    )
+    .unwrap();
+    for index in 0..6 {
+        fs::write(
+            root.path().join(format!("f{index}.rs")),
+            widget_file(&index.to_string(), ""),
+        )
+        .unwrap();
+    }
+    root
+}
+
+fn request_input(request: &Value) -> Value {
+    serde_json::from_str(request["input"].as_str().unwrap()).unwrap()
+}
+
+/// The bytes a request spends beyond the same candidates asked without context.
+fn context_bytes(body: &[u8]) -> usize {
+    let request: Value = serde_json::from_slice(body).unwrap();
+    let input = request_input(&request);
+    let candidates: Vec<Candidate> = input["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| Candidate {
+            name: candidate["name"].as_str().unwrap(),
+            path: candidate["path"].as_str().unwrap(),
+            text: candidate["text"].as_str().unwrap(),
+            start_line: candidate["start_line"].as_u64().unwrap() as usize,
+            end_line: candidate["end_line"].as_u64().unwrap() as usize,
+        })
+        .collect();
+    let plain = Batch::encode(input["query"].as_str().unwrap(), &candidates).unwrap();
+    body.len() - plain.encoded_len()
+}
+
+#[tokio::test]
+async fn relation_context_carries_enclosing_header_and_caller_excerpt() {
+    let root = relation_fixture();
+    let server = Server::new(evidence_fixture_server(0.1)).await;
+    let report = run(&root, &server, Options::default()).await;
+    let requests: Vec<Value> = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice(body).unwrap())
+        .collect();
+    let related: Vec<&Value> = requests
+        .iter()
+        .filter(|request| has_context(request) && !evidence_donor(request))
+        .collect();
+    assert_eq!(related.len(), 1);
+    assert_eq!(question_names(related[0]), ["w2"]);
+    let input = request_input(related[0]);
+    assert_eq!(input["query"], "item behavior");
+    // The candidate keeps its original window; only the context slot changes.
+    let expected_window: String = widget_file("", "")
+        .lines()
+        .skip(72)
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(input["candidates"][0]["text"], expected_window);
+    assert_eq!(input["candidates"][0]["start_line"], 73);
+    assert_eq!(input["candidates"][0]["end_line"], 93);
+    let slot = &input["related_source"];
+    assert_eq!(slot["name"], relation::SLOT_NAME);
+    assert_eq!(slot["path"], "a.rs");
+    assert_eq!(
+        slot["text"],
+        "// w2 enclosing declarations, b.rs:1,2\n\
+         impl Widget {\n\
+         \x20   fn long_method(&self) {\n\
+         // w2 declares distinctive_helper, called from accepted a.rs:1-1\n\
+         fn caller() { distinctive_helper(); }"
+    );
+    // The evidence batch puts the same context before the unchanged card.
+    let evidence: Vec<&Value> = requests
+        .iter()
+        .filter(|request| evidence_donor(request))
+        .collect();
+    assert_eq!(evidence.len(), 1);
+    let input = request_input(evidence[0]);
+    let text = input["related_source"]["text"].as_str().unwrap();
+    assert!(text.starts_with("// w2 enclosing declarations, b.rs:1,2\nimpl Widget {\n"));
+    assert!(text.contains("// w2 declares distinctive_helper, called from accepted a.rs:1-1\n"));
+    assert!(text.ends_with("\n// a.rs:1-1\nfn caller() { distinctive_helper(); }\n"));
+    assert_eq!(input["related_source"]["name"], "evidence");
+    // Receipts still name the batch's donor.
+    let donors: Vec<_> = report
+        .judgment_events
+        .iter()
+        .filter(|event| event.name == "w2")
+        .map(|event| event.donor.as_deref())
+        .collect();
+    assert_eq!(donors, [None, Some("w0"), Some("evidence")]);
+}
+
+#[tokio::test]
+async fn relation_context_shrinks_its_excerpts_to_stay_within_the_allowance() {
+    let root = relation_budget_fixture();
+    let server = Server::new(evidence_fixture_server(0.1)).await;
+    let report = run(&root, &server, Options::default()).await;
+    assert!(report.errors.is_empty());
+    let bodies = server.bodies();
+    let mut related = 0;
+    let mut evidence = 0;
+    for body in &bodies {
+        let request: Value = serde_json::from_slice(body).unwrap();
+        if !has_context(&request) {
+            continue;
+        }
+        let input = request_input(&request);
+        let slot = &input["related_source"];
+        let text = slot["text"].as_str().unwrap();
+        if evidence_donor(&request) {
+            evidence += usize::from(text.contains("called from accepted a.rs:"));
+            assert!(context_bytes(body) <= EVIDENCE_LIMIT);
+            assert!(
+                text.contains("// a.rs:1-8\nfn caller() {\n    let first_padding_line"),
+                "{text}"
+            );
+        } else {
+            related += 1;
+            assert_eq!(slot["name"], relation::SLOT_NAME);
+            assert_eq!(question_names(&request).len(), 6);
+            assert!(context_bytes(body) <= 4096, "{}", context_bytes(body));
+            // Six full excerpts exceed the allowance; the call line survives, the outer
+            // padding lines do not, and every header is intact.
+            assert!(text.contains("    distinctive_helper();\n"));
+            assert!(!text.contains("first_padding_line"));
+            for index in 0..6 {
+                assert!(text.contains(&format!(
+                    "impl Widget{index} {{\n    fn long_method{index}(&self) {{\n"
+                )));
+            }
+        }
+    }
+    assert_eq!(related, 1);
+    assert!(evidence >= 1);
+}
+
+#[tokio::test]
+async fn relation_context_refusal_retry_is_asked_alone_with_its_own_context() {
+    let root = relation_fixture();
+    fs::write(root.path().join("c.rs"), "distinctive_helper other_name\n").unwrap();
+    let server = Server::new(|request, _| {
+        if !has_context(request) {
+            return initial_related_scores(request, 0.1);
+        }
+        if evidence_donor(request) || question_names(request).len() == 1 {
+            return Reply::scores(request, 0.1);
+        }
+        let mut reply = Reply::scores(request, 0.1);
+        for answer in reply.body["answers"].as_array_mut().unwrap() {
+            if answer["type"] == "predicate" {
+                answer.as_object_mut().unwrap().remove("probability");
+                answer["type"] = json!("refusal");
+                answer["refusal"] = json!("cannot judge");
+            }
+        }
+        reply
+    })
+    .await;
+    let report = run(&root, &server, Options::default()).await;
+    assert!(report.errors.is_empty());
+    let retries: Vec<Value> = server
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_slice::<Value>(body).unwrap())
+        .filter(|request| {
+            has_context(request) && !evidence_donor(request) && question_names(request) == ["w2"]
+        })
+        .collect();
+    assert_eq!(retries.len(), 1);
+    let input = request_input(&retries[0]);
+    assert_eq!(input["related_source"]["name"], relation::SLOT_NAME);
+    let text = input["related_source"]["text"].as_str().unwrap();
+    assert!(text.starts_with("// w2 enclosing declarations, b.rs:1,2\nimpl Widget {\n"));
+    assert!(text.contains("// w2 declares distinctive_helper, called from accepted a.rs:1-1\n"));
+}
+
+fn related_plans(
+    prepared: &Prepared,
+    initial: &BTreeMap<usize, Option<f64>>,
+    fresh: &BTreeSet<usize>,
+) -> [(VecDeque<Job>, Option<&'static str>); 2] {
+    [false, true].map(|relation| {
+        related::plan(
+            prepared,
+            "behavior",
+            initial,
+            fresh,
+            0.5,
+            Reservation {
+                attempts: 8,
+                bytes: 1000,
+            },
+            Policy {
+                max_attempts: 16,
+                max_bytes: 512 * 1024,
+                attempt_timeout: Duration::from_secs(5),
+            },
+            relation,
+            &mut || Control::Continue,
+        )
+    })
+}
+
+fn slot_name(job: &Job) -> String {
+    let request: Value = serde_json::from_slice(job.batch.body()).unwrap();
+    request_input(&request)["related_source"]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Targets, donors, partners, order, stop reason and attempts of the shared-identifier and
+/// evidence plans are the same with and without relation context; only the slot's content and
+/// its bytes differ, and both stay within the pass's allowance.
+#[test]
+fn relation_context_keeps_the_parent_targets_partners_and_attempts() {
+    let root = relation_budget_fixture();
+    for index in 30..60 {
+        fs::write(
+            root.path().join(format!("g{index:03}.rs")),
+            if index % 2 == 0 {
+                "link_alpha distinctive_helper"
+            } else {
+                "link_bravo"
+            },
+        )
+        .unwrap();
+    }
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let file_of = |index: usize| prepared.windows[index].file;
+    let initial = BTreeMap::from([
+        (0, Some(0.9)),
+        (13, Some(0.9)),
+        (2, Some(0.1)),
+        (14, Some(0.1)),
+        (15, None),
+    ]);
+    let fresh = BTreeSet::from([file_of(0), file_of(13)]);
+    let [(parent, parent_stop), (relation, relation_stop)] =
+        related_plans(&prepared, &initial, &fresh);
+    assert_eq!(parent_stop, relation_stop);
+    assert_eq!(parent.len(), relation.len());
+    assert!(parent.len() >= 3);
+    let mut relation_slots = 0;
+    for (old, new) in parent.iter().zip(&relation) {
+        let (
+            Purpose::Related { targets, donor },
+            Purpose::Related {
+                targets: new_targets,
+                donor: new_donor,
+            },
+        ) = (&old.purpose, &new.purpose)
+        else {
+            panic!("related jobs only");
+        };
+        assert_eq!((targets, donor), (new_targets, new_donor));
+        let plain = source_batch(&prepared, "behavior", targets)
+            .unwrap()
+            .encoded_len();
+        assert!(old.batch.encoded_len() - plain <= 4096);
+        assert!(new.batch.encoded_len() - plain <= 4096);
+        assert_eq!(slot_name(old), format!("w{donor}"));
+        relation_slots += usize::from(slot_name(new) == relation::SLOT_NAME);
+    }
+    assert_eq!(relation_slots, relation.len());
+    let evidence_plans = |relation: bool| {
+        let mut probabilities = initial.clone();
+        let mut best = BTreeMap::new();
+        for index in 0..prepared.windows.len() {
+            probabilities.entry(index).or_insert(Some(0.1));
+            if let Some(p) = probabilities[&index] {
+                best.insert(index, p);
+            }
+        }
+        evidence::plan(
+            &prepared,
+            "behavior",
+            &probabilities,
+            &best,
+            &fresh,
+            &BTreeSet::from([2, 4]),
+            &BTreeMap::from([(6, 0.8)]),
+            0.5,
+            Reservation {
+                attempts: 18,
+                bytes: 1000,
+            },
+            Policy {
+                max_attempts: 22,
+                max_bytes: 768 * 1024,
+                attempt_timeout: Duration::from_secs(5),
+            },
+            relation,
+            &mut || Control::Continue,
+        )
+        .unwrap()
+    };
+    let (parent_card, parent) = evidence_plans(false);
+    let (relation_card, relation) = evidence_plans(true);
+    assert_eq!(parent_card, relation_card);
+    assert_eq!(parent.len(), relation.len());
+    assert_eq!(parent.len(), EVIDENCE_JOBS);
+    let mut grown = 0;
+    for (old, new) in parent.iter().zip(&relation) {
+        let (
+            Purpose::Evidence { targets },
+            Purpose::Evidence {
+                targets: new_targets,
+            },
+        ) = (&old.purpose, &new.purpose)
+        else {
+            panic!("evidence jobs only");
+        };
+        assert_eq!(targets, new_targets);
+        let plain = source_batch(&prepared, "behavior", targets)
+            .unwrap()
+            .encoded_len();
+        assert!(old.batch.encoded_len() - plain <= EVIDENCE_LIMIT);
+        assert!(new.batch.encoded_len() - plain <= EVIDENCE_LIMIT);
+        // A chunk whose targets have no context keeps the card alone, byte for byte.
+        grown += usize::from(new.batch.encoded_len() > old.batch.encoded_len());
+        if new.batch.encoded_len() == old.batch.encoded_len() {
+            assert_eq!(new.batch.body(), old.batch.body());
+        }
+        assert_eq!(slot_name(old), "evidence");
+        assert_eq!(slot_name(new), "evidence");
+        let request: Value = serde_json::from_slice(new.batch.body()).unwrap();
+        let text = request_input(&request)["related_source"]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(text.ends_with(&parent_card.0));
+    }
+    assert!(grown >= 1);
+}
+
+/// The window of `path` holding `line` and its relation context at full size, given the
+/// judgments in `judged`.
+fn relation_text(
+    root: &TempDir,
+    path: &str,
+    line: usize,
+    judged: &[(usize, f64)],
+) -> (usize, String) {
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let file = prepared
+        .snapshot
+        .files()
+        .iter()
+        .position(|file| file.path() == path)
+        .unwrap();
+    let target = (0..prepared.windows.len())
+        .find(|&index| {
+            let window = &prepared.windows[index];
+            window.file == file && window.start_line <= line && line <= window.end_line
+        })
+        .unwrap();
+    let probabilities: BTreeMap<usize, Option<f64>> =
+        judged.iter().map(|&(index, p)| (index, Some(p))).collect();
+    let fresh: BTreeSet<usize> = probabilities
+        .keys()
+        .map(|&index| prepared.windows[index].file)
+        .collect();
+    let judged = relation::Judged {
+        probabilities: &probabilities,
+        fresh: &fresh,
+        threshold: 0.5,
+    };
+    let mut index = relation::Index::new(&prepared, "behavior", &mut || Control::Continue).unwrap();
+    (target, index.relation(target, &judged, None).text())
+}
+
+#[test]
+fn relation_header_follows_indentation_across_languages() {
+    let root = fixture(0);
+    let body = |indent: &str, line: &str| format!("{indent}{line}\n").repeat(84);
+    // A multi-line signature's closing line does not hide the declaration; a decorator and a
+    // sibling method above it are skipped.
+    fs::write(
+        root.path().join("multi.py"),
+        format!(
+            "class Foo:\n    def sibling(self):\n        pass\n\n    @property\n    def bar(\n        self,\n        x,\n    ):\n{}",
+            body("        ", "y = x")
+        ),
+    )
+    .unwrap();
+    // A comment at column zero inside a function neither encloses nor closes it.
+    fs::write(
+        root.path().join("stray.rs"),
+        format!(
+            "fn big() {{\n    let a = 1;\n// stray comment at column zero\n{}}}\n",
+            body("    ", "a += 1;")
+        ),
+    )
+    .unwrap();
+    // A method without a declaration keyword still reads as a header, under its class.
+    fs::write(
+        root.path().join("context.ts"),
+        format!(
+            "export class Context {{\n  header(name: string, value: string): void {{\n{}  }}\n}}\n",
+            body("    ", "this.headers.set(name, value)")
+        ),
+    )
+    .unwrap();
+    // A sibling scope closed by a non-header line at lower indentation is not an ancestor.
+    fs::write(
+        root.path().join("sibling.py"),
+        format!(
+            "class A:\n    def first(self):\n        pass\n    DATA = [\n{}    ]\n",
+            body("        ", "1,")
+        ),
+    )
+    .unwrap();
+    let header = |path: &str| {
+        let (target, text) = relation_text(&root, path, 85, &[]);
+        text.strip_prefix(&format!("// w{target} enclosing declarations, {path}:"))
+            .unwrap_or_else(|| panic!("{path}: {text}"))
+            .to_owned()
+    };
+    assert!(header("multi.py").starts_with("1,6\nclass Foo:\n    def bar(\n"));
+    assert!(header("stray.rs").starts_with("1\nfn big() {\n"));
+    assert!(header("context.ts").starts_with(
+        "1,2\nexport class Context {\n  header(name: string, value: string): void {\n"
+    ));
+    assert_eq!(header("sibling.py"), "1\nclass A:\n");
+}
+
+#[test]
+fn relation_excerpt_binds_members_uses_and_declarations() {
+    let root = fixture(0);
+    let filler = "        self.value = 1\n".repeat(84);
+    // An enum member assigned without a keyword is a declaration for relation purposes, and a
+    // comparison against it elsewhere in the file is its use.
+    fs::write(
+        root.path().join("core.py"),
+        format!(
+            "import enum\n\nclass ParameterSource(enum.IntEnum):\n    PROMPT = enum.auto()\n    DEFAULT_MAP = enum.auto()\n    DEFAULT = enum.auto()\n\nclass Other:\n    def method(self):\n{filler}\n\ndef check(ctx):\n    source = ctx.get_parameter_source(\"port\")\n    if source < ParameterSource.DEFAULT_MAP:\n        return True\n    return False\n"
+        ),
+    )
+    .unwrap();
+    let (target, text) = relation_text(&root, "core.py", 4, &[]);
+    assert!(
+        text.contains(&format!(
+            "// w{target} declares DEFAULT_MAP, used in core.py:"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("    if source < ParameterSource.DEFAULT_MAP:\n"));
+    // A window that declares nothing shows the declaration of a helper it calls; a bare
+    // lower-case word that matches a declared name elsewhere is not a use.
+    let filler = "        relative = compute(relative);\n".repeat(84);
+    fs::write(
+        root.path().join("long.rs"),
+        format!(
+            "fn relative(x: u8) -> u8 {{\n    x\n}}\n\nfn compute(relative: u8) -> u8 {{\n    relative\n}}\n\nfn driver() {{\n    let mut relative = 0;\n{filler}}}\n"
+        ),
+    )
+    .unwrap();
+    let (target, text) = relation_text(&root, "long.rs", 90, &[]);
+    assert!(
+        text.starts_with(&format!(
+            "// w{target} enclosing declarations, long.rs:9\nfn driver() {{\n"
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "// w{target} calls compute, declared in long.rs:5-"
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("relative, declared"));
+    // An accepted caller in another file serves and is labelled accepted; a rejected one does
+    // not serve, and a file that declares the name itself is never its caller.
+    fs::write(root.path().join("helper.rs"), "fn unique_helper() {}\n").unwrap();
+    fs::write(
+        root.path().join("accepted.rs"),
+        "fn run() { unique_helper(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("shadow.rs"),
+        "fn unique_helper() {}\nfn other() { unique_helper(); }\n",
+    )
+    .unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let window_of = |path: &str| {
+        (0..prepared.windows.len())
+            .find(|&index| prepared.snapshot.files()[prepared.windows[index].file].path() == path)
+            .unwrap()
+    };
+    let (helper, accepted, shadow) = (
+        window_of("helper.rs"),
+        window_of("accepted.rs"),
+        window_of("shadow.rs"),
+    );
+    assert_eq!(
+        relation_text(&root, "helper.rs", 1, &[(accepted, 0.9)]).1,
+        format!(
+            "// w{helper} declares unique_helper, called from accepted accepted.rs:1-1\nfn run() {{ unique_helper(); }}\n"
+        )
+    );
+    assert_eq!(
+        relation_text(&root, "helper.rs", 1, &[(accepted, 0.2)]).1,
+        ""
+    );
+    assert_eq!(relation_text(&root, "helper.rs", 1, &[(shadow, 0.9)]).1, "");
+    assert_eq!(relation_text(&root, "helper.rs", 1, &[]).1, "");
+}
+
 #[tokio::test]
 async fn no_evidence_phase_without_accepted_windows() {
     let root = related_fixture();
@@ -3105,6 +3676,7 @@ fn evidence_card_for(
             max_bytes: 768 * 1024,
             attempt_timeout: Duration::from_secs(5),
         },
+        true,
         &mut || Control::Continue,
     )
     .map(|(card, _)| card)

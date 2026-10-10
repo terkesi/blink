@@ -235,6 +235,11 @@ impl Batch {
     pub fn encoded_len(&self) -> usize {
         self.body.len()
     }
+
+    #[cfg(test)]
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
 }
 
 #[derive(Clone)]

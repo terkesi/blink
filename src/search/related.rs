@@ -26,12 +26,16 @@ pub(super) fn recheck(
     }
 }
 
-fn identifiers(text: &str) -> BTreeSet<&str> {
+pub(super) fn identifiers(text: &str) -> BTreeSet<&str> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|word| word.chars().count() >= 4 && word.chars().any(char::is_alphabetic))
         .collect()
 }
 
+/// Plans the shared-identifier re-asks. Targets, their donor, batch partners and order never
+/// depend on `relation`: with it, each planned batch is re-encoded so the `related_source` slot
+/// carries every target's relation context instead of the donor window, within the same 4 KiB
+/// allowance, and keeps the donor window when no target has any context or none of it fits.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -41,6 +45,7 @@ pub(super) fn plan(
     threshold: f64,
     mut planned: Reservation,
     policy: Policy,
+    relation: bool,
     control: &mut dyn FnMut() -> Control,
 ) -> (VecDeque<Job>, Option<&'static str>) {
     let text = |index: usize| {
@@ -89,6 +94,14 @@ pub(super) fn plan(
     let mut planned_jobs = Vec::new();
     let ready = tokio::time::Instant::now();
     let mut omitted = false;
+    let mut relations = (relation && INCLUDE_RELATED_EVIDENCE && !groups.is_empty())
+        .then(|| relation::Index::new(prepared, query, control))
+        .flatten();
+    let judged = relation::Judged {
+        probabilities: initial,
+        fresh,
+        threshold,
+    };
     for (donor, mut targets) in groups {
         targets.sort_by_key(|&(target, longest, total)| {
             (
@@ -137,13 +150,31 @@ pub(super) fn plan(
                     Batch::encode_with_context(query, &candidates, &evidence, 4096)
                 {
                     let contextual_len = contextual.encoded_len();
-                    let batch = if INCLUDE_RELATED_EVIDENCE {
-                        contextual
-                    } else {
-                        Batch::encode_related_control(query, &candidates)
-                            .expect("validated candidates")
-                    };
-                    break Some((batch, contextual_len));
+                    // The donor batch fixes the partners; the relation batch only replaces
+                    // what fills the context slot, within the same allowance.
+                    let related = relations.as_mut().and_then(|index| {
+                        let contexts: Vec<_> = remaining[..count]
+                            .iter()
+                            .map(|&(target, _, _)| index.relation(target, &judged, Some(donor)))
+                            .collect();
+                        let slot = Candidate {
+                            name: relation::SLOT_NAME,
+                            ..evidence
+                        };
+                        relation::encode(query, &candidates, &contexts, slot, None, 4096)
+                    });
+                    break Some(match related {
+                        Some(batch) => {
+                            let bytes = batch.encoded_len();
+                            (batch, bytes)
+                        }
+                        None if INCLUDE_RELATED_EVIDENCE => (contextual, contextual_len),
+                        None => (
+                            Batch::encode_related_control(query, &candidates)
+                                .expect("validated candidates"),
+                            contextual_len,
+                        ),
+                    });
                 }
                 count -= 1;
                 if count == 0 {

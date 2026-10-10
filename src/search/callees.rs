@@ -5,14 +5,18 @@ const DECLARATIONS: &str = "def class fn fun func function struct enum trait int
 const MODIFIERS: &str =
     "pub export default async static public private protected abstract final unsafe override";
 
-fn word(text: &str) -> (&str, &str) {
+pub(super) fn word(text: &str) -> (&str, &str) {
     text.split_at(
         text.find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(text.len()),
     )
 }
 
-fn skip_group(text: &str) -> &str {
+pub(super) fn is_modifier(word: &str) -> bool {
+    listed(MODIFIERS, word)
+}
+
+pub(super) fn skip_group(text: &str) -> &str {
     let text = text.trim_start();
     text.strip_prefix('(').map_or(text, |inner| {
         inner
@@ -25,7 +29,7 @@ fn listed(list: &str, word: &str) -> bool {
     list.split(' ').any(|item| item == word)
 }
 
-fn declaration(line: &str) -> Option<&str> {
+pub(super) fn declaration(line: &str) -> Option<&str> {
     let mut rest = line.trim_start();
     let mut modified = false;
     loop {

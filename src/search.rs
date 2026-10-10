@@ -4,6 +4,7 @@ mod deepen;
 mod evidence;
 mod navigation;
 mod related;
+mod relation;
 
 use crate::{
     provider::{Batch, Candidate, Failure, Judgment, Provider},
@@ -39,6 +40,10 @@ const EVIDENCE_BYTES: usize = 12 * 1024;
 const EVIDENCE_LIMIT: usize = EVIDENCE_BYTES + 4096;
 const EVIDENCE_ALLOWANCE: usize = 64 * 1024;
 const INCLUDE_RELATED_EVIDENCE: bool = true;
+/// Shared-identifier and evidence re-asks carry each target's relation context (its enclosing
+/// declaration and one verified caller, declaration or shared-identifier excerpt) instead of the
+/// whole donor window, and before the evidence card. Planning does not depend on this flag.
+const RELATION_CONTEXT: bool = true;
 
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -975,6 +980,7 @@ async fn execute_with_policies(
                     options.threshold,
                     used,
                     policy,
+                    RELATION_CONTEXT,
                     &mut { &control },
                 );
                 callee_queue = callees::plan(
@@ -1024,6 +1030,7 @@ async fn execute_with_policies(
                     options.threshold,
                     used,
                     evidence_policy,
+                    RELATION_CONTEXT,
                     &mut { &control },
                 );
                 match planned {
@@ -1183,6 +1190,15 @@ async fn execute_with_policies(
                             Purpose::Source(indices) => indices.len() == 1,
                             _ => true,
                         };
+                        // A refusal retry is asked alone with the same kind of context as its
+                        // batch: the target's relation context for shared-identifier and
+                        // evidence batches when it has any, otherwise the donor window (always,
+                        // for a callee batch) or the evidence card.
+                        let judged = relation::Judged {
+                            probabilities: &probabilities,
+                            fresh: &fresh,
+                            threshold: options.threshold,
+                        };
                         for index in refused.into_iter().filter(|_| !asked_alone) {
                             let name = format!("w{index}");
                             let window = candidate(&prepared, index, &name);
@@ -1190,15 +1206,31 @@ async fn execute_with_policies(
                                 Purpose::Related { donor, .. } => {
                                     let donor_name = format!("w{donor}");
                                     let evidence = candidate(&prepared, *donor, &donor_name);
-                                    (
-                                        Batch::encode_with_context(
+                                    let related = (RELATION_CONTEXT && INCLUDE_RELATED_EVIDENCE && phase == Phase::Related).then(|| {
+                                        relation::single(
+                                            &prepared,
                                             &query,
-                                            std::slice::from_ref(&window),
-                                            &evidence,
+                                            index,
+                                            &judged,
+                                            Some(*donor),
+                                            Candidate { name: relation::SLOT_NAME, ..evidence },
+                                            None,
                                             4096,
+                                            &mut { &control },
                                         )
-                                        .ok()
-                                        .flatten(),
+                                    })
+                                    .flatten();
+                                    (
+                                        related.or_else(|| {
+                                            Batch::encode_with_context(
+                                                &query,
+                                                std::slice::from_ref(&window),
+                                                &evidence,
+                                                4096,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                        }),
                                         Purpose::Related {
                                             targets: vec![index],
                                             donor: *donor,
@@ -1216,14 +1248,31 @@ async fn execute_with_policies(
                                                 start_line: *start_line,
                                                 end_line: *end_line,
                                             };
-                                            Batch::encode_with_context(
-                                                &query,
-                                                std::slice::from_ref(&window),
-                                                &evidence,
-                                                EVIDENCE_LIMIT,
-                                            )
-                                            .ok()
-                                            .flatten()
+                                            RELATION_CONTEXT
+                                                .then(|| {
+                                                    relation::single(
+                                                        &prepared,
+                                                        &query,
+                                                        index,
+                                                        &judged,
+                                                        None,
+                                                        evidence,
+                                                        Some(text),
+                                                        EVIDENCE_LIMIT,
+                                                        &mut { &control },
+                                                    )
+                                                })
+                                                .flatten()
+                                                .or_else(|| {
+                                                    Batch::encode_with_context(
+                                                        &query,
+                                                        std::slice::from_ref(&window),
+                                                        &evidence,
+                                                        EVIDENCE_LIMIT,
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                                })
                                         }),
                                     Purpose::Evidence {
                                         targets: vec![index],

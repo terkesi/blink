@@ -2,6 +2,10 @@ use super::*;
 
 pub(super) type Card = (String, String, usize, usize, BTreeSet<usize>);
 
+/// Plans the evidence re-asks. The card, its targets and their batches never depend on
+/// `relation`: with it, each batch's `evidence` slot starts with every target's relation context
+/// and continues with the unchanged card, within the same allowance, and keeps the card alone
+/// when no target has any context or none of it fits.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -14,6 +18,7 @@ pub(super) fn plan(
     threshold: f64,
     mut reserved: Reservation,
     policy: Policy,
+    relation: bool,
     control: &mut dyn FnMut() -> Control,
 ) -> Option<(Card, VecDeque<Job>)> {
     let accepted: Vec<(usize, f64)> = probabilities
@@ -175,6 +180,14 @@ pub(super) fn plan(
     });
     let ready = tokio::time::Instant::now();
     let mut jobs = VecDeque::new();
+    let mut relations = (relation && !targets.is_empty())
+        .then(|| relation::Index::new(prepared, query, control))
+        .flatten();
+    let judged = relation::Judged {
+        probabilities,
+        fresh,
+        threshold,
+    };
     for chunk in targets.chunks(EVIDENCE_BATCH).take(EVIDENCE_JOBS) {
         if control() != Control::Continue {
             break;
@@ -188,10 +201,28 @@ pub(super) fn plan(
             .zip(&names)
             .map(|(&(_, _, index, _), name)| candidate(prepared, index, name))
             .collect();
-        let Some(batch) = Batch::encode_with_context(query, &candidates, &evidence, EVIDENCE_LIMIT)
-            .ok()
-            .flatten()
-        else {
+        // The relation context precedes the unchanged card in the same slot, so a chunk sent
+        // with context would also have been sent with the card alone: the planned chunks and
+        // their partners do not depend on the context.
+        let related = relations.as_mut().and_then(|index| {
+            let contexts: Vec<_> = chunk
+                .iter()
+                .map(|&(_, _, target, _)| index.relation(target, &judged, None))
+                .collect();
+            relation::encode(
+                query,
+                &candidates,
+                &contexts,
+                evidence,
+                Some(evidence.text),
+                EVIDENCE_LIMIT,
+            )
+        });
+        let Some(batch) = related.or_else(|| {
+            Batch::encode_with_context(query, &candidates, &evidence, EVIDENCE_LIMIT)
+                .ok()
+                .flatten()
+        }) else {
             continue;
         };
         let Some(next) = reserve(
