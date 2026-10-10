@@ -1633,7 +1633,9 @@ fn initial_related_scores(request: &Value, target: f64) -> Reply {
 }
 
 #[tokio::test]
-async fn related_replaces_probabilities_in_both_directions_without_extra_coverage() {
+async fn related_raises_probabilities_but_never_lowers_them_without_extra_coverage() {
+    // A window keeps its best judgment: a shared-identifier re-ask can lift a rejected window
+    // into the results but cannot retract one accepted alone.
     for (initial, replacement) in [(0.1, 0.9), (0.9, 0.1)] {
         let server = Server::new(move |request, _| {
             if has_context(request) {
@@ -1644,6 +1646,7 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
         })
         .await;
         let report = run(&related_fixture(), &server, Options::default()).await;
+        let best = f64::max(initial, replacement);
         assert_eq!(
             report
                 .raw_judgments
@@ -1651,12 +1654,9 @@ async fn related_replaces_probabilities_in_both_directions_without_extra_coverag
                 .find(|j| j.name == "w1")
                 .unwrap()
                 .probability,
-            Some(replacement)
+            Some(best)
         );
-        assert_eq!(
-            report.results.iter().any(|r| r.path == "b.rs"),
-            replacement >= 0.5
-        );
+        assert_eq!(report.results.iter().any(|r| r.path == "b.rs"), best >= 0.5);
         assert_eq!(report.coverage.windows_selected, 2);
         assert_eq!(report.coverage.windows_sent, 2);
         assert_eq!(report.coverage.windows_judged, 2);
@@ -2682,7 +2682,7 @@ async fn callee_deadline_keeps_completed_shared_word_results() {
 }
 
 #[tokio::test]
-async fn callee_jobs_skip_donors_retracted_by_shared_word_jobs() {
+async fn callee_jobs_still_run_for_a_donor_a_shared_word_job_scored_low() {
     let root = fixture(0);
     fs::write(
         root.path().join("f000.rs"),
@@ -2714,10 +2714,12 @@ async fn callee_jobs_skip_donors_retracted_by_shared_word_jobs() {
         .filter(|request| has_context(request) && !evidence_donor(request))
         .collect();
     assert!(!related.is_empty());
+    // Acceptance is monotone, so a shared-identifier re-ask cannot retract the donor and the
+    // callee jobs for it still run.
     assert!(
         related
             .iter()
-            .all(|request| !question_names(request).contains(&"w2".to_owned()))
+            .any(|request| question_names(request).contains(&"w2".to_owned()))
     );
 }
 
@@ -2833,7 +2835,9 @@ async fn failed_refusal_retry_is_best_effort() {
 }
 
 #[tokio::test]
-async fn refusal_retry_skips_a_donor_the_follow_up_rejected() {
+async fn refusal_retry_runs_alone_when_its_donor_stays_accepted() {
+    // The donor scores 0.1 in the shared-identifier batch, but acceptance is monotone, so it stays
+    // accepted and the refused window is asked once more on its own.
     let server = Server::new(|request, _| {
         if !has_context(request) {
             let mut reply = Reply::scores(request, 0.1);
@@ -2857,17 +2861,18 @@ async fn refusal_retry_skips_a_donor_the_follow_up_rejected() {
     fs::write(root.path().join("d.rs"), "fn caller_two() { caller(); }\n").unwrap();
     let report = run(&root, &server, Options::default()).await;
     assert!(report.errors.is_empty());
-    assert_eq!(
+    assert!(
         report
             .judgment_events
             .iter()
             .filter(|e| e.name == "w2" && e.donor.is_some())
-            .count(),
-        1
+            .count()
+            >= 2,
+        "the refused window is asked again"
     );
-    assert!(server.bodies().iter().all(|body| {
+    assert!(server.bodies().iter().any(|body| {
         let request: Value = serde_json::from_slice(body).unwrap();
-        question_names(&request) != ["w2"]
+        question_names(&request) == ["w2"]
     }));
 }
 

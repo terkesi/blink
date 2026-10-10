@@ -1112,7 +1112,14 @@ async fn execute_with_policies(
                                 }
                                 continue;
                             };
-                            probabilities.insert(index, Some(probability));
+                            // A window keeps its best judgment: a later re-ask in another
+                            // batch (shared-identifier context, evidence) can raise it but not
+                            // retract an acceptance. Receipts showed re-asks retracting gold
+                            // spans accepted alone far more often than they removed false ones.
+                            let entry = probabilities.entry(index).or_insert(None);
+                            if entry.is_none_or(|p| probability > p) {
+                                *entry = Some(probability);
+                            }
                             let best = best_scores.entry(index).or_insert(probability);
                             if probability > *best {
                                 *best = probability;
