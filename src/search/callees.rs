@@ -105,7 +105,7 @@ pub(super) fn plan(
     mut reserved: Reservation,
     policy: Policy,
     control: &mut dyn FnMut() -> Control,
-) -> VecDeque<Job> {
+) -> (VecDeque<Job>, Option<&'static str>) {
     let text = |index: usize| {
         let window = &prepared.windows[index];
         &prepared.snapshot.files()[window.file].text()[window.start..window.end]
@@ -121,7 +121,10 @@ pub(super) fn plan(
             policy.max_attempts,
             policy.max_bytes,
         ) else {
-            return VecDeque::new();
+            return (
+                VecDeque::new(),
+                Some(limit_stop(reserved, policy.max_attempts)),
+            );
         };
         reserved = next;
     }
@@ -140,12 +143,12 @@ pub(super) fn plan(
         })
         .collect();
     if donors.is_empty() {
-        return VecDeque::new();
+        return (VecDeque::new(), None);
     }
     let mut declared = Vec::with_capacity(prepared.windows.len());
     for index in 0..prepared.windows.len() {
         if control() != Control::Continue {
-            return VecDeque::new();
+            return (VecDeque::new(), None);
         }
         declared.push(declarations(text(index)));
     }
@@ -161,7 +164,7 @@ pub(super) fn plan(
     let mut groups: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
     for target in 0..prepared.windows.len() {
         if control() != Control::Continue {
-            return VecDeque::new();
+            return (VecDeque::new(), None);
         }
         if excluded.contains(&target)
             || initial
@@ -259,10 +262,10 @@ pub(super) fn plan(
             policy.max_attempts,
             policy.max_bytes,
         ) else {
-            break;
+            return (queue, Some(limit_stop(reserved, policy.max_attempts)));
         };
         reserved = next;
         queue.push_back(job);
     }
-    queue
+    (queue, None)
 }

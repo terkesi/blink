@@ -32,10 +32,13 @@ pub(super) fn identifiers(text: &str) -> BTreeSet<&str> {
         .collect()
 }
 
-/// Plans the shared-identifier re-asks. Targets, their donor, batch partners and order never
+/// Plans the shared-identifier re-asks. Targets, their donor, batch partners and order do not
 /// depend on `relation`: with it, each planned batch is re-encoded so the `related_source` slot
 /// carries every target's relation context instead of the donor window, within the same 4 KiB
-/// allowance, and keeps the donor window when no target has any context or none of it fits.
+/// per-batch allowance, and keeps the donor window when no target has any context or none of it
+/// fits. The slot's actual bytes are what the pass reserves, so when the byte ceiling binds the
+/// planned tail of this pass, and of the passes planned after it, can be shorter than without
+/// it; every job dropped that way records a stop.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -225,14 +228,7 @@ pub(super) fn plan(
     let mut jobs = VecDeque::new();
     for (_, bytes, job) in planned_jobs {
         let Some(next) = reserve(planned, bytes, policy.max_attempts, policy.max_bytes) else {
-            return (
-                jobs,
-                Some(if planned.attempts == policy.max_attempts {
-                    "attempt_limit"
-                } else {
-                    "request_byte_limit"
-                }),
-            );
+            return (jobs, Some(limit_stop(planned, policy.max_attempts)));
         };
         planned = next;
         jobs.push_back(job);

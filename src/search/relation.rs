@@ -232,7 +232,7 @@ fn cut(line: &str) -> String {
 }
 
 fn is_comment(trimmed: &str) -> bool {
-    ["//", "#", "/*", "*", "--", "@", "<!--"]
+    ["//", "#", "/*", "*", "--", "<!--"]
         .iter()
         .any(|prefix| trimmed.starts_with(prefix))
 }
@@ -272,8 +272,9 @@ fn is_header(trimmed: &str) -> bool {
 
 /// The declaration lines that enclose the window's first non-blank line, outermost first:
 /// walking upwards, a header at a smaller indentation than everything seen so far encloses the
-/// window; any other line at a smaller indentation closes the scopes above it, except
-/// continuation lines of a multi-line signature and comments.
+/// window; any other line at a smaller indentation (a closing brace, an assignment, a
+/// decorator or annotation) closes the scopes above it, except continuation lines of a
+/// multi-line signature and comments.
 fn enclosing(prepared: &Prepared, target: usize) -> Vec<(usize, String)> {
     let window = &prepared.windows[target];
     let file = &prepared.snapshot.files()[window.file];
@@ -581,9 +582,10 @@ impl<'a> Index<'a> {
                     continue;
                 }
                 if let Some(line) = self.line_in(target, other, |line| declares(line) == Some(name))
-                    && !header
-                        .iter()
-                        .any(|&(number, _)| number == windows[other].start_line + line)
+                    && !(windows[other].file == windows[target].file
+                        && header
+                            .iter()
+                            .any(|&(number, _)| number == windows[other].start_line + line))
                 {
                     best = Some(((key, other, name, line), call));
                 }

@@ -16,7 +16,7 @@ pub(super) fn plan(
     mut reserved: Reservation,
     policy: Policy,
     control: &mut dyn FnMut() -> Control,
-) -> VecDeque<Job> {
+) -> (VecDeque<Job>, Option<&'static str>) {
     let stale: BTreeSet<usize> = probabilities
         .iter()
         .filter_map(|(&index, probability)| {
@@ -101,7 +101,7 @@ pub(super) fn plan(
         let mut declaring: BTreeMap<&str, Vec<(usize, usize)>> = BTreeMap::new();
         for index in 0..prepared.windows.len() {
             if control() != Control::Continue {
-                return VecDeque::new();
+                return (VecDeque::new(), None);
             }
             let file = prepared.windows[index].file;
             if strength.contains_key(&file) || stale.contains(&file) {
@@ -219,7 +219,7 @@ pub(super) fn plan(
             policy.max_attempts,
             policy.max_bytes,
         ) else {
-            break;
+            return (jobs, Some(limit_stop(reserved, policy.max_attempts)));
         };
         reserved = next;
         jobs.push_back(Job {
@@ -231,5 +231,5 @@ pub(super) fn plan(
             ready,
         });
     }
-    jobs
+    (jobs, None)
 }

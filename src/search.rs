@@ -10,7 +10,7 @@ use crate::{
     provider::{Batch, Candidate, Failure, Judgment, Provider},
     source::{Control, Coverage, Limits, Snapshot, Source},
 };
-use bounds::{Reservation, reserve, valid_range};
+use bounds::{Reservation, limit_stop, reserve, valid_range};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
@@ -42,7 +42,10 @@ const EVIDENCE_ALLOWANCE: usize = 64 * 1024;
 const INCLUDE_RELATED_EVIDENCE: bool = true;
 /// Shared-identifier and evidence re-asks carry each target's relation context (its enclosing
 /// declaration and one verified caller, declaration or shared-identifier excerpt) instead of the
-/// whole donor window, and before the evidence card. Planning does not depend on this flag.
+/// whole donor window, and before the evidence card. Target and partner selection do not depend
+/// on this flag; the slot shares each batch's allowance, and because its actual bytes are what
+/// the passes reserve, a binding byte ceiling can cut a pass's planned tail earlier than without
+/// it, which the stop reasons record.
 const RELATION_CONTEXT: bool = true;
 
 #[derive(Clone, Debug)]
@@ -876,11 +879,7 @@ async fn execute_with_policies(
                 admission.max_attempts,
                 admission.max_bytes,
             ) else {
-                stops.insert(if used.attempts >= admission.max_attempts {
-                    "attempt_limit"
-                } else {
-                    "request_byte_limit"
-                });
+                stops.insert(limit_stop(used, admission.max_attempts));
                 if matches!(job.purpose, Purpose::Route(_)) {
                     routes_pending -= 1;
                 }
@@ -983,7 +982,7 @@ async fn execute_with_policies(
                     RELATION_CONTEXT,
                     &mut { &control },
                 );
-                callee_queue = callees::plan(
+                let (callee_jobs, callee_stop) = callees::plan(
                     &prepared,
                     &query,
                     &probabilities,
@@ -994,10 +993,9 @@ async fn execute_with_policies(
                     followup,
                     &mut { &control },
                 );
+                callee_queue = callee_jobs;
                 queue = related_jobs;
-                if let Some(stop) = stop {
-                    stops.insert(stop);
-                }
+                stops.extend(stop.into_iter().chain(callee_stop));
                 continue;
             }
             if phase == Phase::Related
@@ -1033,8 +1031,13 @@ async fn execute_with_policies(
                     RELATION_CONTEXT,
                     &mut { &control },
                 );
+                // Evidence work the byte or attempt ceiling dropped at planning, up to the
+                // whole pass, is a recorded stop like any other bounded work.
+                if let Some((_, _, Some(stop))) = &planned {
+                    stops.insert(stop);
+                }
                 match planned {
-                    Some((card, jobs))
+                    Some((card, jobs, _))
                         if !jobs.is_empty()
                             && card.4.iter().all(|&file| {
                                 related::recheck(
@@ -1088,7 +1091,7 @@ async fn execute_with_policies(
                     <= tokio::time::Instant::from_std(deadline)
             {
                 deepened = true;
-                let jobs = deepen::plan(
+                let (jobs, stop) = deepen::plan(
                     &prepared,
                     &query,
                     &probabilities,
@@ -1098,6 +1101,7 @@ async fn execute_with_policies(
                     deepen_policy,
                     &mut { &control },
                 );
+                stops.extend(stop);
                 if !jobs.is_empty() {
                     phase = Phase::Deepen;
                     donors_rechecked.clear();

@@ -2,10 +2,12 @@ use super::*;
 
 pub(super) type Card = (String, String, usize, usize, BTreeSet<usize>);
 
-/// Plans the evidence re-asks. The card, its targets and their batches never depend on
+/// Plans the evidence re-asks. The card, its targets and their chunks do not depend on
 /// `relation`: with it, each batch's `evidence` slot starts with every target's relation context
-/// and continues with the unchanged card, within the same allowance, and keeps the card alone
-/// when no target has any context or none of it fits.
+/// and continues with the unchanged card, within the same per-batch allowance, and keeps the
+/// card alone when no target has any context or none of it fits. The slot's actual bytes are
+/// what the pass reserves, so when the byte ceiling binds the planned tail of this pass, up to
+/// the whole pass, can be shorter than without it; every chunk dropped that way records a stop.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan(
     prepared: &Prepared,
@@ -20,7 +22,7 @@ pub(super) fn plan(
     policy: Policy,
     relation: bool,
     control: &mut dyn FnMut() -> Control,
-) -> Option<(Card, VecDeque<Job>)> {
+) -> Option<(Card, VecDeque<Job>, Option<&'static str>)> {
     let accepted: Vec<(usize, f64)> = probabilities
         .iter()
         .filter_map(|(&index, &probability)| {
@@ -231,7 +233,7 @@ pub(super) fn plan(
             policy.max_attempts,
             policy.max_bytes,
         ) else {
-            break;
+            return Some((card, jobs, Some(limit_stop(reserved, policy.max_attempts))));
         };
         reserved = next;
         jobs.push_back(Job {
@@ -245,5 +247,5 @@ pub(super) fn plan(
             ready,
         });
     }
-    Some((card, jobs))
+    Some((card, jobs, None))
 }

@@ -2374,6 +2374,7 @@ fn callee_plan_adds_unplanned_unaccepted_definitions_with_their_best_caller() {
             },
             &mut || Control::Continue,
         )
+        .0
         .iter()
         .map(|job| match &job.purpose {
             Purpose::Related { targets, donor } => (*donor, targets.clone()),
@@ -2485,6 +2486,7 @@ fn callee_plan_for(root: &TempDir, initial: &[(usize, f64)]) -> Vec<(usize, Vec<
         },
         &mut || Control::Continue,
     )
+    .0
     .iter()
     .map(|job| match &job.purpose {
         Purpose::Related { targets, donor } => (*donor, targets.clone()),
@@ -2574,7 +2576,7 @@ fn callee_plan_ranks_rarest_names_includes_bodies_and_skips_oversized_donors() {
             }
         },
     );
-    assert!(stopped.is_empty());
+    assert!(stopped.0.is_empty());
 }
 
 fn callee_fixture() -> TempDir {
@@ -3170,6 +3172,62 @@ async fn relation_context_refusal_retry_is_asked_alone_with_its_own_context() {
     assert!(text.contains("// w2 declares distinctive_helper, called from accepted a.rs:1-1\n"));
 }
 
+/// A flat byte ceiling that binds after the shared-identifier pass: the evidence pass loses its
+/// tail, or is skipped entirely, and either way the ledger stays within the ceiling and the
+/// stop names the byte limit.
+#[tokio::test]
+async fn binding_byte_ceiling_records_a_stop_and_keeps_the_ledger() {
+    let root = relation_budget_fixture();
+    let unbounded = Server::new(evidence_fixture_server(0.1)).await;
+    let report = run(&root, &unbounded, Options::default()).await;
+    assert!(!report.budgets.stops.contains(&"request_byte_limit"));
+    let bodies = unbounded.bodies();
+    let is_evidence = |body: &Vec<u8>| evidence_donor(&serde_json::from_slice(body).unwrap());
+    let first_evidence = bodies.iter().position(is_evidence).unwrap();
+    assert!(bodies[first_evidence + 1..].iter().any(is_evidence));
+    let before: usize = bodies[..first_evidence].iter().map(Vec::len).sum();
+    for (ceiling, evidence_sent) in [
+        (before + bodies[first_evidence].len() - 1, 0),
+        (before + bodies[first_evidence].len(), 1),
+    ] {
+        let server = Server::new(evidence_fixture_server(0.1)).await;
+        let policy = Policy {
+            max_attempts: 8,
+            max_bytes: ceiling,
+            attempt_timeout: Duration::from_secs(5),
+        };
+        let report = execute_with_policies(
+            Source::open(root.path()).unwrap(),
+            "item behavior".into(),
+            Options::default(),
+            server.provider(),
+            Arc::new(AtomicBool::new(false)),
+            policy,
+            Some(policy),
+        )
+        .await;
+        let bodies = server.bodies();
+        assert_eq!(
+            bodies.iter().filter(|body| is_evidence(body)).count(),
+            evidence_sent
+        );
+        assert!(
+            report.budgets.stops.contains(&"request_byte_limit"),
+            "{:?}",
+            report.budgets.stops
+        );
+        assert_eq!(report.budgets.max_encoded_request_bytes, ceiling);
+        assert_eq!(
+            report.budgets.encoded_request_bytes,
+            bodies.iter().map(Vec::len).sum::<usize>()
+        );
+        assert!(report.budgets.encoded_request_bytes <= ceiling);
+        assert_eq!(report.budgets.attempts, bodies.len());
+        assert!(report.errors.is_empty());
+        assert_eq!(report.coverage.windows_judged, 13);
+    }
+}
+
 fn related_plans(
     prepared: &Prepared,
     initial: &BTreeMap<usize, Option<f64>>,
@@ -3296,9 +3354,10 @@ fn relation_context_keeps_the_parent_targets_partners_and_attempts() {
         )
         .unwrap()
     };
-    let (parent_card, parent) = evidence_plans(false);
-    let (relation_card, relation) = evidence_plans(true);
+    let (parent_card, parent, parent_stop) = evidence_plans(false);
+    let (relation_card, relation, relation_stop) = evidence_plans(true);
     assert_eq!(parent_card, relation_card);
+    assert_eq!((parent_stop, relation_stop), (None, None));
     assert_eq!(parent.len(), relation.len());
     assert_eq!(parent.len(), EVIDENCE_JOBS);
     let mut grown = 0;
@@ -3519,6 +3578,76 @@ fn relation_excerpt_binds_members_uses_and_declarations() {
     assert_eq!(relation_text(&root, "helper.rs", 1, &[]).1, "");
 }
 
+#[test]
+fn relation_header_ignores_a_closed_sibling_above_a_decorator() {
+    let root = fixture(0);
+    let body = |indent: &str, line: &str, count: usize| format!("{indent}{line}\n").repeat(count);
+    // The second window (from line 73) starts inside the multi-line decorator: at top level
+    // nothing encloses it, inside a class only the class does, and the closed `first` above the
+    // decorator is not reported either way.
+    fs::write(
+        root.path().join("deco.py"),
+        format!(
+            "def first():\n{}@decorator(\n{})\ndef second():\n    return 1\n",
+            body("    ", "x = 1", 70),
+            body("    ", "option=1,", 20)
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("deco_class.py"),
+        format!(
+            "class A:\n    def first(self):\n{}    @decorator(\n{}    )\n    def second(self):\n        return 1\n",
+            body("        ", "x = 1", 69),
+            body("        ", "option=1,", 20)
+        ),
+    )
+    .unwrap();
+    let (_, text) = relation_text(&root, "deco.py", 85, &[]);
+    assert_eq!(text, "");
+    let (target, text) = relation_text(&root, "deco_class.py", 85, &[]);
+    assert_eq!(
+        text,
+        format!("// w{target} enclosing declarations, deco_class.py:1\nclass A:\n")
+    );
+}
+
+#[test]
+fn relation_declaration_excerpt_may_share_a_line_number_with_the_header() {
+    let root = fixture(0);
+    fs::write(
+        root.path().join("t.rs"),
+        format!(
+            "impl Widget {{\n    fn long_method(&self) {{\n{}    }}\n}}\n",
+            "        helper_in_other();\n".repeat(90)
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("o.rs"),
+        "// other\nfn helper_in_other() {}\n",
+    )
+    .unwrap();
+    let prepared = prepare_with_policy(
+        &Source::open(root.path()).unwrap(),
+        "behavior",
+        test_policy(&Options::default()),
+        &mut || Control::Continue,
+    );
+    let other = (0..prepared.windows.len())
+        .find(|&index| prepared.snapshot.files()[prepared.windows[index].file].path() == "o.rs")
+        .unwrap();
+    // Only a declaration in the target's own file can duplicate a header line; `o.rs:2` is not
+    // `t.rs:2`, so the declaration the window calls is shown under the header.
+    let (target, text) = relation_text(&root, "t.rs", 85, &[(other, 0.9)]);
+    assert_eq!(
+        text,
+        format!(
+            "// w{target} enclosing declarations, t.rs:1,2\nimpl Widget {{\n    fn long_method(&self) {{\n// w{target} calls helper_in_other, declared in accepted o.rs:2-2\nfn helper_in_other() {{}}\n"
+        )
+    );
+}
+
 #[tokio::test]
 async fn no_evidence_phase_without_accepted_windows() {
     let root = related_fixture();
@@ -3679,7 +3808,7 @@ fn evidence_card_for(
         true,
         &mut || Control::Continue,
     )
-    .map(|(card, _)| card)
+    .map(|(card, _, _)| card)
 }
 
 #[test]
@@ -4060,7 +4189,7 @@ fn deepen_plan_orders_by_file_strength_then_distance() {
     let probabilities: BTreeMap<usize, Option<f64>> =
         BTreeMap::from([(a[0], Some(0.6)), (b[4], Some(0.9))]);
     let fresh: BTreeSet<usize> = BTreeSet::from([0, 1]);
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &probabilities,
@@ -4179,7 +4308,7 @@ fn deepen_plan_includes_implicated_files_after_accepted_ones() {
     let probabilities: BTreeMap<usize, Option<f64>> =
         BTreeMap::from([(a[2], Some(0.3)), (b[0], Some(0.9)), (c[0], Some(0.1))]);
     let fresh: BTreeSet<usize> = BTreeSet::from([1]);
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &probabilities,
@@ -4264,6 +4393,7 @@ fn deepen_plan_sweeps_the_files_the_query_words_point_at_once_something_is_accep
                 },
                 &mut || Control::Continue,
             )
+            .0
             .iter()
             .flat_map(|job| match &job.purpose {
                 Purpose::Source(indices) => indices.clone(),
@@ -4336,7 +4466,7 @@ fn deepen_plan_sweeps_files_that_declare_what_accepted_code_calls() {
         })
         .unwrap();
     // Only the caller's first window is accepted; f001 has never been read and shares no query word.
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &BTreeMap::from([(a[0], Some(0.9))]),
@@ -4394,7 +4524,7 @@ fn deepen_plan_skips_files_already_found_stale() {
     // Accepted at 0.9 but the file failed its freshness recheck (not in `fresh`); another window at 0.3.
     let probabilities: BTreeMap<usize, Option<f64>> =
         BTreeMap::from([(a[0], Some(0.9)), (a[2], Some(0.3))]);
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &probabilities,
@@ -4469,7 +4599,7 @@ fn deepen_callee_tier_prefers_rare_names_and_caps_its_files() {
     };
     let m = windows_of(file_of("m.rs"));
     let x = windows_of(file_of("x.rs"));
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &BTreeMap::from([(m[0], Some(0.9))]),
@@ -4549,7 +4679,7 @@ fn deepen_common_callee_names_carry_no_signal_and_leave_the_query_word_tier_inta
     };
     let m = windows_of(file_of("m.rs"));
     let z = windows_of(file_of("z.rs"));
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &BTreeMap::from([(m[0], Some(0.9))]),
@@ -4639,7 +4769,7 @@ fn deepen_files_the_callee_tier_collects_but_does_not_sweep_stay_eligible_for_th
     };
     let m = windows_of(file_of("m.rs"));
     let d_windows = windows_of(file_of("d.rs"));
-    let jobs = deepen::plan(
+    let (jobs, _) = deepen::plan(
         &prepared,
         "behavior",
         &BTreeMap::from([(m[0], Some(0.9))]),
